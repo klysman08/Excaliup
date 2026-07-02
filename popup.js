@@ -9,37 +9,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   const engineStatus = document.getElementById('engineStatus');
   
   const flowToggle = document.getElementById('flowToggle');
-  const flowSpeed = document.getElementById('flowSpeed');
   const flowSettingsGroup = document.getElementById('flowSettingsGroup');
 
-  // New controls
+  // GIF playback controls
   const gifSpeed = document.getElementById('gifSpeed');
   const gifSettingsGroup = document.getElementById('gifSettingsGroup');
-  const flowDirection = document.getElementById('flowDirection');
-  const particleSize = document.getElementById('particleSize');
-  const particleSizeValue = document.getElementById('particleSizeValue');
-  const particleSpacing = document.getElementById('particleSpacing');
-  const particleSpacingValue = document.getElementById('particleSpacingValue');
-  const glowIntensity = document.getElementById('glowIntensity');
-  const advancedToggle = document.getElementById('advancedToggle');
-  const advancedToggleIcon = document.getElementById('advancedToggleIcon');
-  const advancedSettings = document.getElementById('advancedSettings');
-
-  // Advanced settings toggle
-  let advancedOpen = false;
-  advancedToggle.addEventListener('click', () => {
-    advancedOpen = !advancedOpen;
-    advancedSettings.classList.toggle('visible', advancedOpen);
-    advancedToggleIcon.classList.toggle('expanded', advancedOpen);
-  });
-
-  // Live range slider value labels
-  particleSize.addEventListener('input', () => {
-    particleSizeValue.textContent = particleSize.value;
-  });
-  particleSpacing.addEventListener('input', () => {
-    particleSpacingValue.textContent = particleSpacing.value;
-  });
 
   // Query the current active tab
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -71,38 +45,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     gifToggle.disabled = !status.connected;
     flowToggle.disabled = !status.connected;
-    flowSpeed.disabled = !status.connected;
     gifSpeed.disabled = !status.connected;
-    flowDirection.disabled = !status.connected;
-    particleSize.disabled = !status.connected;
-    particleSpacing.disabled = !status.connected;
-    glowIntensity.disabled = !status.connected;
 
     // Load current settings from response or use defaults
     const settings = status.settings || {
       gifsEnabled: status.enabled,
       flowEnabled: true,
-      flowStyle: 'particles',
-      flowSpeed: 'medium',
-      particleSize: 3,
-      particleSpacing: 50,
-      glowIntensity: 'medium',
-      flowDirection: 'forward',
       gifSpeed: 1
     };
 
     gifToggle.checked = settings.gifsEnabled;
     flowToggle.checked = settings.flowEnabled;
-    flowSpeed.value = settings.flowSpeed;
     gifSpeed.value = settings.gifSpeed || 1;
-    flowDirection.value = settings.flowDirection || 'forward';
-    particleSize.value = settings.particleSize || 3;
-    particleSizeValue.textContent = settings.particleSize || 3;
-    particleSpacing.value = settings.particleSpacing || 50;
-    particleSpacingValue.textContent = settings.particleSpacing || 50;
-    glowIntensity.value = settings.glowIntensity || 'medium';
 
-    flowSettingsGroup.style.display = settings.flowEnabled ? 'flex' : 'none';
     gifSettingsGroup.style.display = settings.gifsEnabled ? 'flex' : 'none';
 
     gifCount.textContent = status.activeGifCount;
@@ -114,15 +69,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       const currentSettings = {
         gifsEnabled: gifToggle.checked,
         flowEnabled: flowToggle.checked,
-        flowSpeed: flowSpeed.value,
-        particleSize: parseInt(particleSize.value, 10),
-        particleSpacing: parseInt(particleSpacing.value, 10),
-        glowIntensity: glowIntensity.value,
-        flowDirection: flowDirection.value,
         gifSpeed: parseFloat(gifSpeed.value)
       };
       
-      flowSettingsGroup.style.display = currentSettings.flowEnabled ? 'flex' : 'none';
       gifSettingsGroup.style.display = currentSettings.gifsEnabled ? 'flex' : 'none';
       
       chrome.tabs.sendMessage(tab.id, { action: "updateSettings", settings: currentSettings }, (response) => {
@@ -132,12 +81,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     gifToggle.onchange = updateSettings;
     flowToggle.onchange = updateSettings;
-    flowSpeed.onchange = updateSettings;
     gifSpeed.onchange = updateSettings;
-    flowDirection.onchange = updateSettings;
-    particleSize.oninput = updateSettings;
-    particleSpacing.oninput = updateSettings;
-    glowIntensity.onchange = updateSettings;
   }
 
   function showDisconnected(reason) {
@@ -148,13 +92,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     gifToggle.checked = false;
     flowToggle.disabled = true;
     flowToggle.checked = false;
-    flowSpeed.disabled = true;
     gifSpeed.disabled = true;
-    flowDirection.disabled = true;
-    particleSize.disabled = true;
-    particleSpacing.disabled = true;
-    glowIntensity.disabled = true;
-    flowSettingsGroup.style.display = 'none';
     gifSettingsGroup.style.display = 'none';
     gifCount.textContent = "0";
     document.getElementById('animatedCount').textContent = "0";

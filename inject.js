@@ -456,40 +456,58 @@
     return { x: lastSeg.end.x, y: lastSeg.end.y, dx: lastSeg.dx, dy: lastSeg.dy };
   }
 
+  const DEFAULT_ELEMENT_CONFIG = {
+    speed: 'medium',
+    direction: 'forward',
+    particleSize: 3,
+    particleSpacing: 50,
+    glowIntensity: 'medium'
+  };
+
+  function getElementConfig(elId) {
+    const elConfig = animatedElements.get(elId) || {};
+    return {
+      style: elConfig.style || 'particles',
+      speed: elConfig.speed || DEFAULT_ELEMENT_CONFIG.speed,
+      direction: elConfig.direction || DEFAULT_ELEMENT_CONFIG.direction,
+      particleSize: elConfig.particleSize !== undefined ? elConfig.particleSize : DEFAULT_ELEMENT_CONFIG.particleSize,
+      particleSpacing: elConfig.particleSpacing !== undefined ? elConfig.particleSpacing : DEFAULT_ELEMENT_CONFIG.particleSpacing,
+      glowIntensity: elConfig.glowIntensity || DEFAULT_ELEMENT_CONFIG.glowIntensity
+    };
+  }
+
+  function getElementOffset(config, globalOffset) {
+    let speed = 2; // medium
+    if (config.speed === 'slow') speed = 0.8;
+    if (config.speed === 'fast') speed = 4;
+    
+    const direction = config.direction || 'forward';
+    if (direction === 'reverse') {
+      return -globalOffset * speed;
+    } else if (direction === 'bounce') {
+      const travel = (globalOffset * speed) % 400;
+      if (travel < 200) {
+        return travel;
+      } else {
+        return 400 - travel;
+      }
+    } else {
+      return globalOffset * speed;
+    }
+  }
+
   function startOverlayLoop() {
     if (overlayAnimationFrameId) return;
     
     let lastTime = 0;
-    
-    let bounceForward = true;
     
     function step(timestamp) {
       if (!lastTime) lastTime = timestamp;
       const dt = timestamp - lastTime;
       lastTime = timestamp;
       
-      let speed = 2; // medium
-      if (currentSettings.flowSpeed === 'slow') speed = 0.8;
-      if (currentSettings.flowSpeed === 'fast') speed = 4;
-      
-      const direction = currentSettings.flowDirection || 'forward';
-      if (direction === 'reverse') {
-        flowOffset -= speed * (dt / 16.666);
-      } else if (direction === 'bounce') {
-        if (bounceForward) {
-          flowOffset += speed * (dt / 16.666);
-        } else {
-          flowOffset -= speed * (dt / 16.666);
-        }
-        // Flip direction every ~200 units of travel
-        if (Math.abs(flowOffset) % 400 > 200) {
-          bounceForward = !bounceForward;
-          // Normalize to prevent drift
-          flowOffset = flowOffset % 400;
-        }
-      } else {
-        flowOffset += speed * (dt / 16.666);
-      }
+      // Increment offset monotonically based on elapsed time
+      flowOffset += (dt / 16.666);
       
       drawOverlay(flowOffset);
       
@@ -571,29 +589,30 @@
         const geometry = getPathGeometry(absPoints);
         
         if (geometry.totalLength > 0) {
-          const elConfig = animatedElements.get(el.id);
-          const style = elConfig ? elConfig.style : 'particles';
-          switch (style) {
+          const config = getElementConfig(el.id);
+          const elOffset = getElementOffset(config, offset);
+          
+          switch (config.style) {
             case 'particles':
-              drawParticles(ctx, el, geometry, offset);
+              drawParticles(ctx, el, geometry, elOffset, config);
               break;
             case 'dashes':
-              drawDashes(ctx, el, geometry, offset);
+              drawDashes(ctx, el, geometry, elOffset, config);
               break;
             case 'gradient':
-              drawGradientPulse(ctx, el, geometry, offset);
+              drawGradientPulse(ctx, el, geometry, elOffset, config);
               break;
             case 'ripple':
-              drawRippleWave(ctx, el, geometry, offset);
+              drawRippleWave(ctx, el, geometry, elOffset, config);
               break;
             case 'train':
-              drawPacketTrain(ctx, el, geometry, offset);
+              drawPacketTrain(ctx, el, geometry, elOffset, config);
               break;
             case 'snake':
-              drawSnakeTrail(ctx, el, geometry, offset);
+              drawSnakeTrail(ctx, el, geometry, elOffset, config);
               break;
             default:
-              drawParticles(ctx, el, geometry, offset);
+              drawParticles(ctx, el, geometry, elOffset, config);
           }
         }
       }
@@ -602,8 +621,8 @@
     ctx.restore();
   }
 
-  function getGlowBlur() {
-    const intensity = currentSettings.glowIntensity || 'medium';
+  function getGlowBlur(config) {
+    const intensity = config.glowIntensity || 'medium';
     switch (intensity) {
       case 'none': return 0;
       case 'subtle': return 3;
@@ -613,21 +632,21 @@
     }
   }
 
-  function drawParticles(ctx, el, geometry, offset) {
+  function drawParticles(ctx, el, geometry, offset, config) {
     const strokeColor = el.strokeColor || '#1e1e1e';
     const strokeWidth = el.strokeWidth || 2;
     
     ctx.save();
     ctx.fillStyle = strokeColor;
     
-    const glowBlur = getGlowBlur();
+    const glowBlur = getGlowBlur(config);
     if (glowBlur > 0) {
       ctx.shadowColor = strokeColor;
       ctx.shadowBlur = glowBlur;
     }
     
-    const spacing = currentSettings.particleSpacing || 50;
-    const sizeFactor = (currentSettings.particleSize || 3) / 3;
+    const spacing = config.particleSpacing || 50;
+    const sizeFactor = (config.particleSize || 3) / 3;
     const radius = Math.max(1.5, strokeWidth * 0.85 * sizeFactor);
     const totalLength = geometry.totalLength;
     
@@ -643,18 +662,18 @@
     ctx.restore();
   }
 
-  function drawDashes(ctx, el, geometry, offset) {
+  function drawDashes(ctx, el, geometry, offset, config) {
     const strokeColor = el.strokeColor || '#1e1e1e';
     const strokeWidth = el.strokeWidth || 2;
     
     ctx.save();
     ctx.strokeStyle = strokeColor;
-    const sizeFactor = (currentSettings.particleSize || 3) / 3;
+    const sizeFactor = (config.particleSize || 3) / 3;
     ctx.lineWidth = (strokeWidth + 0.8) * sizeFactor;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     
-    const glowBlur = getGlowBlur();
+    const glowBlur = getGlowBlur(config);
     if (glowBlur > 0) {
       ctx.shadowColor = strokeColor;
       ctx.shadowBlur = glowBlur;
@@ -679,23 +698,23 @@
   // NEW ANIMATION STYLES
   // ═══════════════════════════════════════════════
 
-  function drawGradientPulse(ctx, el, geometry, offset) {
+  function drawGradientPulse(ctx, el, geometry, offset, config) {
     const strokeColor = el.strokeColor || '#1e1e1e';
     const strokeWidth = el.strokeWidth || 2;
     const totalLength = geometry.totalLength;
     if (totalLength === 0) return;
     
     ctx.save();
-    const sizeFactor = (currentSettings.particleSize || 3) / 3;
+    const sizeFactor = (config.particleSize || 3) / 3;
     ctx.lineWidth = (strokeWidth + 2) * sizeFactor;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     
-    const glowBlur = getGlowBlur();
+    const glowBlur = getGlowBlur(config);
     
     // Draw multiple gradient sweeps along the path
     const sweepLength = 80 * sizeFactor;
-    const spacing = currentSettings.particleSpacing || 50;
+    const spacing = config.particleSpacing || 50;
     const sweepSpacing = Math.max(sweepLength + 20, spacing * 2);
     
     let startDist = ((offset * 1.5) % sweepSpacing);
@@ -744,16 +763,16 @@
     ctx.restore();
   }
 
-  function drawRippleWave(ctx, el, geometry, offset) {
+  function drawRippleWave(ctx, el, geometry, offset, config) {
     const strokeColor = el.strokeColor || '#1e1e1e';
     const strokeWidth = el.strokeWidth || 2;
     const totalLength = geometry.totalLength;
     if (totalLength === 0) return;
     
     ctx.save();
-    const sizeFactor = (currentSettings.particleSize || 3) / 3;
-    const glowBlur = getGlowBlur();
-    const spacing = currentSettings.particleSpacing || 50;
+    const sizeFactor = (config.particleSize || 3) / 3;
+    const glowBlur = getGlowBlur(config);
+    const spacing = config.particleSpacing || 50;
     const maxRadius = (8 + strokeWidth * 2) * sizeFactor;
     
     // Place ripple centers along the path at intervals
@@ -790,16 +809,16 @@
     ctx.restore();
   }
 
-  function drawPacketTrain(ctx, el, geometry, offset) {
+  function drawPacketTrain(ctx, el, geometry, offset, config) {
     const strokeColor = el.strokeColor || '#1e1e1e';
     const strokeWidth = el.strokeWidth || 2;
     const totalLength = geometry.totalLength;
     if (totalLength === 0) return;
     
     ctx.save();
-    const sizeFactor = (currentSettings.particleSize || 3) / 3;
-    const glowBlur = getGlowBlur();
-    const spacing = currentSettings.particleSpacing || 50;
+    const sizeFactor = (config.particleSize || 3) / 3;
+    const glowBlur = getGlowBlur(config);
+    const spacing = config.particleSpacing || 50;
     
     ctx.fillStyle = strokeColor;
     if (glowBlur > 0) {
@@ -836,16 +855,16 @@
     ctx.restore();
   }
 
-  function drawSnakeTrail(ctx, el, geometry, offset) {
+  function drawSnakeTrail(ctx, el, geometry, offset, config) {
     const strokeColor = el.strokeColor || '#1e1e1e';
     const strokeWidth = el.strokeWidth || 2;
     const totalLength = geometry.totalLength;
     if (totalLength === 0) return;
     
     ctx.save();
-    const sizeFactor = (currentSettings.particleSize || 3) / 3;
-    const glowBlur = getGlowBlur();
-    const spacing = currentSettings.particleSpacing || 50;
+    const sizeFactor = (config.particleSize || 3) / 3;
+    const glowBlur = getGlowBlur(config);
+    const spacing = config.particleSpacing || 50;
     
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
@@ -913,10 +932,11 @@
     { id: 'snake', label: 'Snake', icon: '∿' },
   ];
 
+  let panelOpen = false;
+
   function injectToolbarStyles() {
     if (document.getElementById('excaligif-toolbar-styles')) return;
 
-    // Load Outfit font if not already available
     if (!document.querySelector('link[href*="Outfit"]')) {
       const fontLink = document.createElement('link');
       fontLink.rel = 'stylesheet';
@@ -934,16 +954,10 @@
         transform: translateX(-50%);
         z-index: 10000;
         display: none;
+        flex-direction: column;
         align-items: center;
-        gap: 3px;
-        background: rgba(18, 18, 26, 0.92);
-        backdrop-filter: blur(16px);
-        -webkit-backdrop-filter: blur(16px);
-        border: 1px solid rgba(140, 90, 220, 0.25);
-        border-radius: 14px;
-        padding: 5px 8px;
+        gap: 6px;
         font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        box-shadow: 0 4px 24px rgba(0,0,0,0.45), 0 0 16px rgba(140, 90, 220, 0.08);
         user-select: none;
       }
       .excaligif-toolbar.visible {
@@ -953,6 +967,127 @@
       @keyframes excaligif-fadeIn {
         from { opacity: 0; transform: translateX(-50%) translateY(8px); }
         to { opacity: 1; transform: translateX(-50%) translateY(0); }
+      }
+      
+      /* Settings Panel above main toolbar */
+      .excaligif-toolbar-panel {
+        display: none;
+        flex-direction: column;
+        gap: 8px;
+        background: rgba(18, 18, 26, 0.96);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        border: 1px solid rgba(140, 90, 220, 0.25);
+        border-radius: 14px;
+        padding: 12px 14px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.45);
+        animation: excaligif-slideUp 0.2s ease-out;
+        width: 250px;
+      }
+      .excaligif-toolbar-panel.visible {
+        display: flex;
+      }
+      @keyframes excaligif-slideUp {
+        from { opacity: 0; transform: translateY(8px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      
+      .excaligif-panel-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .excaligif-panel-row > span {
+        font-size: 10px;
+        color: rgba(255,255,255,0.45);
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        width: 65px;
+      }
+      
+      /* Pill Button Selectors */
+      .excaligif-pill-group {
+        display: flex;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 8px;
+        padding: 2px;
+        flex: 1;
+        justify-content: space-between;
+      }
+      .excaligif-pill-group button {
+        background: none;
+        border: none;
+        color: rgba(255,255,255,0.5);
+        font-family: inherit;
+        font-size: 10px;
+        font-weight: 600;
+        padding: 4px 6px;
+        cursor: pointer;
+        border-radius: 6px;
+        transition: all 0.15s ease;
+        outline: none;
+        flex: 1;
+        text-align: center;
+      }
+      .excaligif-pill-group button:hover {
+        color: rgba(255,255,255,0.85);
+      }
+      .excaligif-pill-group button.active {
+        background: rgba(140, 90, 220, 0.25);
+        border: 1px solid rgba(140, 90, 220, 0.4);
+        color: hsl(270, 75%, 70%);
+      }
+      
+      /* Range Inputs */
+      .excaligif-range-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: 1;
+      }
+      .excaligif-range-group input[type="range"] {
+        -webkit-appearance: none;
+        appearance: none;
+        flex: 1;
+        height: 3px;
+        background: rgba(255,255,255,0.1);
+        border-radius: 3px;
+        outline: none;
+        cursor: pointer;
+      }
+      .excaligif-range-group input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 10px;
+        height: 10px;
+        background: hsl(270, 75%, 64%);
+        border-radius: 50%;
+        cursor: pointer;
+        box-shadow: 0 0 6px hsla(270, 75%, 64%, 0.5);
+      }
+      .excaligif-range-group span {
+        font-size: 10px;
+        font-weight: 600;
+        color: hsl(270, 75%, 70%);
+        min-width: 20px;
+        text-align: right;
+      }
+      
+      /* Main Toolbar Bar */
+      .excaligif-toolbar-main {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        background: rgba(18, 18, 26, 0.92);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        border: 1px solid rgba(140, 90, 220, 0.25);
+        border-radius: 14px;
+        padding: 5px 8px;
+        box-shadow: 0 4px 24px rgba(0,0,0,0.45), 0 0 16px rgba(140, 90, 220, 0.08);
       }
       .excaligif-toolbar-label {
         font-size: 11px;
@@ -1004,6 +1139,15 @@
       .excaligif-toolbar-btn.active:hover {
         background: hsl(270, 75%, 58%);
       }
+      .excaligif-toolbar-btn.gear {
+        padding: 5px 8px;
+        font-size: 12px;
+      }
+      .excaligif-toolbar-btn.gear.active {
+        background: rgba(140, 90, 220, 0.2);
+        border-color: rgba(140, 90, 220, 0.4);
+        color: hsl(270, 75%, 70%);
+      }
       .excaligif-toolbar-btn.remove {
         color: rgba(255,255,255,0.35);
         padding: 5px 8px;
@@ -1030,16 +1174,55 @@
     toolbar.className = 'excaligif-toolbar';
     toolbar.id = 'excaligif-toolbar';
 
+    // 1. Settings Panel
+    const panel = document.createElement('div');
+    panel.className = 'excaligif-toolbar-panel';
+    panel.id = 'excaligif-toolbar-panel';
+
+    // Speed Row
+    panel.appendChild(createPillRow('Speed', 'speed', [
+      { val: 'slow', label: 'Slow' },
+      { val: 'medium', label: 'Med' },
+      { val: 'fast', label: 'Fast' }
+    ]));
+
+    // Direction Row
+    panel.appendChild(createPillRow('Direction', 'direction', [
+      { val: 'forward', label: 'Forward' },
+      { val: 'reverse', label: 'Reverse' },
+      { val: 'bounce', label: 'Bounce' }
+    ]));
+
+    // Glow Row
+    panel.appendChild(createPillRow('Glow', 'glowIntensity', [
+      { val: 'none', label: 'None' },
+      { val: 'subtle', label: 'Subtle' },
+      { val: 'medium', label: 'Med' },
+      { val: 'strong', label: 'Strong' }
+    ]));
+
+    // Size Slider Row
+    panel.appendChild(createSliderRow('Size', 'excaligif-size-input', 'excaligif-size-val', 1, 5, 3, 1, 'particleSize'));
+
+    // Spacing Slider Row
+    panel.appendChild(createSliderRow('Spacing', 'excaligif-spacing-input', 'excaligif-spacing-val', 20, 120, 50, 5, 'particleSpacing'));
+
+    toolbar.appendChild(panel);
+
+    // 2. Main Bar
+    const mainBar = document.createElement('div');
+    mainBar.className = 'excaligif-toolbar-main';
+
     // Logo label
     const label = document.createElement('div');
     label.className = 'excaligif-toolbar-label';
     label.innerHTML = 'Excali<span>Gif</span>';
-    toolbar.appendChild(label);
+    mainBar.appendChild(label);
 
     // Divider
     const div1 = document.createElement('div');
     div1.className = 'excaligif-toolbar-divider';
-    toolbar.appendChild(div1);
+    mainBar.appendChild(div1);
 
     // Style buttons
     for (const animStyle of ANIMATION_STYLES) {
@@ -1052,13 +1235,27 @@
         e.preventDefault();
         onStyleButtonClick(animStyle.id);
       });
-      toolbar.appendChild(btn);
+      mainBar.appendChild(btn);
     }
 
     // Divider
     const div2 = document.createElement('div');
     div2.className = 'excaligif-toolbar-divider';
-    toolbar.appendChild(div2);
+    mainBar.appendChild(div2);
+
+    // Gear button for tuning panel
+    const gearBtn = document.createElement('button');
+    gearBtn.className = 'excaligif-toolbar-btn gear';
+    gearBtn.id = 'excaligif-gear-btn';
+    gearBtn.textContent = '⚙️';
+    gearBtn.title = 'Tune Animation';
+    gearBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      panelOpen = !panelOpen;
+      updateToolbarPanelVisibility();
+    });
+    mainBar.appendChild(gearBtn);
 
     // Remove button
     const removeBtn = document.createElement('button');
@@ -1071,10 +1268,107 @@
       e.preventDefault();
       onRemoveClick();
     });
-    toolbar.appendChild(removeBtn);
+    mainBar.appendChild(removeBtn);
+
+    toolbar.appendChild(mainBar);
 
     document.body.appendChild(toolbar);
     toolbarElement = toolbar;
+  }
+
+  function createPillRow(labelName, settingKey, options) {
+    const row = document.createElement('div');
+    row.className = 'excaligif-panel-row';
+    
+    const span = document.createElement('span');
+    span.textContent = labelName;
+    row.appendChild(span);
+    
+    const group = document.createElement('div');
+    group.className = 'excaligif-pill-group';
+    group.dataset.setting = settingKey;
+    
+    options.forEach(opt => {
+      const btn = document.createElement('button');
+      btn.dataset.val = opt.val;
+      btn.textContent = opt.label;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        updateElementSetting(settingKey, opt.val);
+      });
+      group.appendChild(btn);
+    });
+    
+    row.appendChild(group);
+    return row;
+  }
+
+  function createSliderRow(labelName, inputId, valId, min, max, val, step, settingKey) {
+    const row = document.createElement('div');
+    row.className = 'excaligif-panel-row';
+    
+    const span = document.createElement('span');
+    span.textContent = labelName;
+    row.appendChild(span);
+    
+    const group = document.createElement('div');
+    group.className = 'excaligif-range-group';
+    
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.id = inputId;
+    input.min = min;
+    input.max = max;
+    input.value = val;
+    input.step = step;
+    
+    const valSpan = document.createElement('span');
+    valSpan.id = valId;
+    valSpan.textContent = val;
+    
+    input.addEventListener('input', (e) => {
+      valSpan.textContent = e.target.value;
+      updateElementSetting(settingKey, parseInt(e.target.value, 10));
+    });
+    
+    group.appendChild(input);
+    group.appendChild(valSpan);
+    row.appendChild(group);
+    return row;
+  }
+
+  function updateElementSetting(key, val) {
+    const el = getSelectedAnimatableElement();
+    if (!el) return;
+    
+    let config = animatedElements.get(el.id);
+    if (!config) {
+      config = { style: 'particles' };
+      animatedElements.set(el.id, config);
+    }
+    
+    config[key] = val;
+    saveAnimatedElements();
+    updateToolbar();
+  }
+
+  function updateToolbarPanelVisibility() {
+    if (!toolbarElement) return;
+    const panel = document.getElementById('excaligif-toolbar-panel');
+    const gearBtn = document.getElementById('excaligif-gear-btn');
+    if (!panel || !gearBtn) return;
+    
+    const el = getSelectedAnimatableElement();
+    const config = el ? animatedElements.get(el.id) : null;
+    
+    if (panelOpen && config) {
+      panel.classList.add('visible');
+      gearBtn.classList.add('active');
+    } else {
+      panel.classList.remove('visible');
+      gearBtn.classList.remove('active');
+    }
   }
 
   function getSelectedAnimatableElement() {
@@ -1089,7 +1383,6 @@
     const el = elements.find(e => e.id === ids[0] && !e.isDeleted);
     if (!el) return null;
 
-    // Only show toolbar for arrows and lines with at least 2 points
     if (el.type !== 'arrow' && el.type !== 'line') return null;
     if (!el.points || el.points.length < 2) return null;
 
@@ -1106,6 +1399,8 @@
         toolbarElement.classList.remove('visible');
       }
       lastSelectedId = null;
+      panelOpen = false;
+      updateToolbarPanelVisibility();
       return;
     }
 
@@ -1115,14 +1410,58 @@
       lastSelectedId = el.id;
     }
 
-    // Update active state on buttons
+    // Update active state on style buttons
     const config = animatedElements.get(el.id);
     const activeStyle = config ? config.style : null;
 
-    const buttons = toolbarElement.querySelectorAll('.excaligif-toolbar-btn:not(.remove)');
+    const buttons = toolbarElement.querySelectorAll('.excaligif-toolbar-main .excaligif-toolbar-btn:not(.remove):not(.gear)');
     for (const btn of buttons) {
       btn.classList.toggle('active', btn.dataset.style === activeStyle);
     }
+
+    const gearBtn = document.getElementById('excaligif-gear-btn');
+    if (gearBtn) {
+      gearBtn.style.display = activeStyle ? 'inline-block' : 'none';
+      if (!activeStyle) {
+        panelOpen = false;
+      }
+    }
+
+    // Populate Settings Panel inputs
+    if (config) {
+      const resolved = getElementConfig(el.id);
+      
+      // Update pill button groups
+      updatePills('speed', resolved.speed);
+      updatePills('direction', resolved.direction);
+      updatePills('glowIntensity', resolved.glowIntensity);
+      
+      // Update Sliders
+      const sizeInput = document.getElementById('excaligif-size-input');
+      const sizeVal = document.getElementById('excaligif-size-val');
+      if (sizeInput && sizeVal) {
+        sizeInput.value = resolved.particleSize;
+        sizeVal.textContent = resolved.particleSize;
+      }
+      
+      const spacingInput = document.getElementById('excaligif-spacing-input');
+      const spacingVal = document.getElementById('excaligif-spacing-val');
+      if (spacingInput && spacingVal) {
+        spacingInput.value = resolved.particleSpacing;
+        spacingVal.textContent = resolved.particleSpacing;
+      }
+    }
+    
+    updateToolbarPanelVisibility();
+  }
+
+  function updatePills(settingKey, activeVal) {
+    const group = toolbarElement.querySelector(`.excaligif-pill-group[data-setting="${settingKey}"]`);
+    if (!group) return;
+    const buttons = group.querySelectorAll('button');
+    buttons.forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.val === activeVal);
+    });
   }
 
   function onStyleButtonClick(styleId) {
@@ -1134,14 +1473,26 @@
     if (existing && existing.style === styleId) {
       // Toggle off if clicking the same style
       animatedElements.delete(el.id);
+      panelOpen = false;
     } else {
-      animatedElements.set(el.id, { style: styleId });
+      // Keep other settings if shifting style, or init defaults
+      if (existing) {
+        existing.style = styleId;
+      } else {
+        animatedElements.set(el.id, {
+          style: styleId,
+          speed: DEFAULT_ELEMENT_CONFIG.speed,
+          direction: DEFAULT_ELEMENT_CONFIG.direction,
+          particleSize: DEFAULT_ELEMENT_CONFIG.particleSize,
+          particleSpacing: DEFAULT_ELEMENT_CONFIG.particleSpacing,
+          glowIntensity: DEFAULT_ELEMENT_CONFIG.glowIntensity
+        });
+      }
     }
 
     saveAnimatedElements();
     updateToolbar();
 
-    // Ensure overlay loop is running if we have animated elements
     if (animatedElements.size > 0 && isEnabled && currentSettings.flowEnabled) {
       startOverlayLoop();
     }
@@ -1152,6 +1503,7 @@
     if (!el) return;
 
     animatedElements.delete(el.id);
+    panelOpen = false;
     saveAnimatedElements();
     updateToolbar();
   }
