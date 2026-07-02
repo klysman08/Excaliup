@@ -464,7 +464,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Select item samples triggers
   sampleHeart.addEventListener('click', () => {
-    const gifUrl = "https://static.klipy.com/ii/f87f46a2c5aeaeed4c68910815f73eaf/b2/8e/ubnyCmzy.gif";
+    const gifUrl = "https://static.klipy.com/ii/4493325008d34b7bf8cd6813cd5c1619/87/ad/71WOMbwke67fmBx.gif";
     addGifToBoard(gifUrl, "Heart Pixel", 120, 100);
   });
 
@@ -474,7 +474,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   sampleGhost.addEventListener('click', () => {
-    const gifUrl = "https://static.klipy.com/ii/4493325008d34b7bf8cd6813cd5c1619/87/ad/71WOMbwke67fmBx.gif";
+    const gifUrl = "https://static.klipy.com/ii/f87f46a2c5aeaeed4c68910815f73eaf/b2/8e/ubnyCmzy.gif";
     addGifToBoard(gifUrl, "Ghost Pixel", 180, 80);
   });
 
