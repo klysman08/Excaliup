@@ -317,3 +317,45 @@ input:disabled + .slider {
     box-shadow: 0 0 12px var(--success-color);
   }
 }
+
+.flow-settings-group {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid var(--card-border);
+  padding-top: 12px;
+  transition: all 0.3s ease;
+}
+
+.settings-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.settings-row span {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.sim-select,
+.settings-row select {
+  background-color: hsl(240, 8%, 18%);
+  border: 1px solid var(--card-border);
+  color: var(--text-main);
+  font-family: var(--font-family);
+  font-size: 11px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.settings-row select:hover {
+  border-color: var(--primary-accent);
+  background-color: hsl(240, 8%, 22%);
+}
+

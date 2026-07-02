@@ -28,6 +28,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const state = {
     connected: true,
     enabled: true,
+    flowEnabled: true,
+    flowStyle: 'particles',
+    flowSpeed: 'medium',
     activeGifs: 0,
     selectedElement: null,
     draggedElement: null,
@@ -43,6 +46,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const gifCount = document.getElementById('gifCount');
   const engineStatus = document.getElementById('engineStatus');
   
+  const flowToggle = document.getElementById('flowToggle');
+  const flowStyle = document.getElementById('flowStyle');
+  const flowSpeed = document.getElementById('flowSpeed');
+  const flowSettingsGroup = document.getElementById('flowSettingsGroup');
+  
   const canvasBoard = document.getElementById('canvasBoard');
   const canvasEmptyState = document.getElementById('canvasEmptyState');
   
@@ -53,6 +61,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const sampleHeart = document.getElementById('sampleHeart');
   const sampleCoin = document.getElementById('sampleCoin');
   const sampleGhost = document.getElementById('sampleGhost');
+  const spawnArrow = document.getElementById('spawnArrow');
+  const spawnZigzag = document.getElementById('spawnZigzag');
 
   const installBtn = document.getElementById('installBtn');
   const demoBtn = document.getElementById('demoBtn');
@@ -95,15 +105,24 @@ document.addEventListener('DOMContentLoaded', () => {
   const updateSimulatorUI = () => {
     // 1. Connection Status Banner
     statusBanner.className = "sim-status-banner";
+    const isConn = state.connected && statusBanner.dataset.state !== 'loading';
+    const isLoading = statusBanner.dataset.state === 'loading';
+    
     if (state.connected) {
       statusBanner.classList.add('connected');
       statusText.textContent = "Excalidraw Connected";
       gifToggle.disabled = false;
       gifToggle.checked = state.enabled;
       engineStatus.textContent = state.enabled ? "Running" : "Paused";
+      
+      flowToggle.disabled = false;
+      flowToggle.checked = state.flowEnabled;
+      flowStyle.disabled = !state.flowEnabled;
+      flowSpeed.disabled = !state.flowEnabled;
+      flowSettingsGroup.style.display = state.flowEnabled ? 'flex' : 'none';
     } else {
       // Check if we want a loading state or absolute disconnected
-      if (statusBanner.dataset.state === 'loading') {
+      if (isLoading) {
         statusBanner.classList.add('loading');
         statusText.textContent = "Canvas Loading...";
         gifToggle.disabled = true;
@@ -116,15 +135,21 @@ document.addEventListener('DOMContentLoaded', () => {
         gifToggle.checked = false;
         engineStatus.textContent = "Inactive";
       }
+      
+      flowToggle.disabled = true;
+      flowToggle.checked = false;
+      flowStyle.disabled = true;
+      flowSpeed.disabled = true;
+      flowSettingsGroup.style.display = 'none';
     }
 
     // Update count display
     gifCount.textContent = state.connected ? state.activeGifs : "0";
 
     // Toggle active classes on simulation controllers
-    btnConnected.classList.toggle('active', state.connected && statusBanner.dataset.state !== 'loading');
-    btnDisconnected.classList.toggle('active', !state.connected && statusBanner.dataset.state !== 'loading');
-    btnLoading.classList.toggle('active', statusBanner.dataset.state === 'loading');
+    btnConnected.classList.toggle('active', isConn);
+    btnDisconnected.classList.toggle('active', !state.connected && !isLoading);
+    btnLoading.classList.toggle('active', isLoading);
 
     // Update playground items animation based on dashboard state
     updatePlaygroundAnimationState();
@@ -159,6 +184,25 @@ document.addEventListener('DOMContentLoaded', () => {
   gifToggle.addEventListener('change', () => {
     state.enabled = gifToggle.checked;
     playToggle(state.enabled);
+    updateSimulatorUI();
+  });
+
+  // Toggle flow animations ON/OFF
+  flowToggle.addEventListener('change', () => {
+    state.flowEnabled = flowToggle.checked;
+    playToggle(state.flowEnabled);
+    updateSimulatorUI();
+  });
+
+  flowStyle.addEventListener('change', () => {
+    state.flowStyle = flowStyle.value;
+    playSelect();
+    updateSimulatorUI();
+  });
+
+  flowSpeed.addEventListener('change', () => {
+    state.flowSpeed = flowSpeed.value;
+    playSelect();
     updateSimulatorUI();
   });
 
@@ -202,29 +246,71 @@ document.addEventListener('DOMContentLoaded', () => {
       const img = el.querySelector('.el-img');
       const canvas = el.querySelector('.el-static-canvas');
       const label = el.querySelector('.el-label');
+      const isArrow = el.classList.contains('element-arrow');
       
-      if (isRunning) {
-        el.classList.remove('static');
-        img.style.display = 'block';
-        canvas.style.display = 'none';
-        label.textContent = "GIF ACTIVE";
-        label.style.backgroundColor = "var(--color-success)";
-      } else {
-        el.classList.add('static');
-        img.style.display = 'none';
-        canvas.style.display = 'block';
-        label.textContent = "STATIC FRAME";
-        label.style.backgroundColor = "var(--color-text-muted)";
+      if (isArrow) {
+        const svg = el.querySelector('svg');
+        const isFlowActive = isRunning && state.flowEnabled;
         
-        // Render first frame of GIF onto static canvas
-        try {
-          const ctx = canvas.getContext('2d');
-          canvas.width = img.naturalWidth || 64;
-          canvas.height = img.naturalHeight || 64;
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        } catch (err) {
-          // Fallback if drawImage fails (e.g. cross-origin, or image not loaded yet)
-          console.log("Canvas drawImage fallback:", err);
+        if (label) {
+          label.textContent = isFlowActive ? `FLOW: ${state.flowStyle.toUpperCase()}` : "STATIC FLOW";
+          label.style.backgroundColor = isFlowActive ? "var(--color-primary)" : "var(--color-text-muted)";
+        }
+        
+        el.classList.toggle('style-particles', state.flowStyle === 'particles');
+        el.classList.toggle('style-dashes', state.flowStyle === 'dashes');
+        el.classList.toggle('static', !isFlowActive);
+        
+        // Update speed class/attributes
+        let dur = '2s';
+        if (state.flowSpeed === 'slow') dur = '4s';
+        if (state.flowSpeed === 'fast') dur = '0.7s';
+        
+        const anims = el.querySelectorAll('animateMotion');
+        anims.forEach(anim => {
+          anim.setAttribute('dur', dur);
+        });
+        
+        // Update marching dashes speed
+        const marchingAnts = el.querySelector('.marching-ants');
+        if (marchingAnts) {
+          let animDuration = '1.2s';
+          if (state.flowSpeed === 'slow') animDuration = '2.4s';
+          if (state.flowSpeed === 'fast') animDuration = '0.4s';
+          marchingAnts.style.animationDuration = animDuration;
+        }
+        
+        if (svg) {
+          if (isFlowActive) {
+            svg.unpauseAnimations();
+          } else {
+            svg.pauseAnimations();
+          }
+        }
+      } else {
+        if (isRunning) {
+          el.classList.remove('static');
+          img.style.display = 'block';
+          canvas.style.display = 'none';
+          label.textContent = "GIF ACTIVE";
+          label.style.backgroundColor = "var(--color-success)";
+        } else {
+          el.classList.add('static');
+          img.style.display = 'none';
+          canvas.style.display = 'block';
+          label.textContent = "STATIC FRAME";
+          label.style.backgroundColor = "var(--color-text-muted)";
+          
+          // Render first frame of GIF onto static canvas
+          try {
+            const ctx = canvas.getContext('2d');
+            canvas.width = img.naturalWidth || 64;
+            canvas.height = img.naturalHeight || 64;
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          } catch (err) {
+            // Fallback if drawImage fails (e.g. cross-origin, or image not loaded yet)
+            console.log("Canvas drawImage fallback:", err);
+          }
         }
       }
     });
@@ -297,6 +383,70 @@ document.addEventListener('DOMContentLoaded', () => {
     checkEmptyState();
   };
 
+  // Add a Vector element to the simulated whiteboard
+  const addArrowToBoard = (points, arrowheadPoints, w, h, name, posX = 100, posY = 100) => {
+    const elId = `el-${state.nextId++}`;
+    
+    const wrapper = document.createElement('div');
+    wrapper.className = 'canvas-element element-arrow selected';
+    wrapper.id = elId;
+    wrapper.style.left = `${posX}px`;
+    wrapper.style.top = `${posY}px`;
+    wrapper.style.width = `${w}px`;
+    wrapper.style.height = `${h}px`;
+
+    wrapper.innerHTML = `
+      <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+        <path d="${points}" class="flow-arrow-line" stroke="var(--color-text-main)" stroke-width="4" fill="none" />
+        <path d="${points}" class="flow-arrow-line marching-ants" stroke="var(--color-primary)" stroke-width="4" stroke-dasharray="10, 6" fill="none" style="display: none;" />
+        <g class="flow-particles" style="display: none;">
+          <circle r="5" fill="var(--color-primary)" filter="drop-shadow(0px 0px 3px var(--color-primary))">
+            <animateMotion dur="2s" repeatCount="indefinite" path="${points}" begin="0s" />
+          </circle>
+          <circle r="5" fill="var(--color-primary)" filter="drop-shadow(0px 0px 3px var(--color-primary))">
+            <animateMotion dur="2s" repeatCount="indefinite" path="${points}" begin="0.5s" />
+          </circle>
+          <circle r="5" fill="var(--color-primary)" filter="drop-shadow(0px 0px 3px var(--color-primary))">
+            <animateMotion dur="2s" repeatCount="indefinite" path="${points}" begin="1s" />
+          </circle>
+          <circle r="5" fill="var(--color-primary)" filter="drop-shadow(0px 0px 3px var(--color-primary))">
+            <animateMotion dur="2s" repeatCount="indefinite" path="${points}" begin="1.5s" />
+          </circle>
+        </g>
+        <polygon points="${arrowheadPoints}" class="flow-arrow-head" fill="var(--color-text-main)" />
+      </svg>
+      <div class="el-label" style="background-color: var(--color-primary)">FLOW: PARTICLES</div>
+    `;
+
+    // Select the newly added element
+    if (state.selectedElement) {
+      state.selectedElement.classList.remove('selected');
+    }
+    state.selectedElement = wrapper;
+
+    // Mouse events for dragging
+    wrapper.addEventListener('mousedown', (e) => {
+      if (e.target.classList.contains('el-label')) return;
+      
+      e.preventDefault();
+      playSelect();
+      
+      if (state.selectedElement) {
+        state.selectedElement.classList.remove('selected');
+      }
+      state.selectedElement = wrapper;
+      wrapper.classList.add('selected');
+      
+      state.draggedElement = wrapper;
+      state.dragOffset.x = e.clientX - wrapper.offsetLeft;
+      state.dragOffset.y = e.clientY - wrapper.offsetTop;
+    });
+
+    canvasBoard.appendChild(wrapper);
+    playSuccess();
+    checkEmptyState();
+  };
+
   // Clear Canvas Board action
   document.getElementById('btnClearCanvas').addEventListener('click', () => {
     const items = canvasBoard.querySelectorAll('.canvas-element');
@@ -321,6 +471,27 @@ document.addEventListener('DOMContentLoaded', () => {
   sampleGhost.addEventListener('click', () => {
     const gifUrl = "https://static.klipy.com/ii/4493325008d34b7bf8cd6813cd5c1619/87/ad/71WOMbwke67fmBx.gif"; // Pacman ghost
     addGifToBoard(gifUrl, "Ghost Pixel", 180, 80);
+  });
+
+  // Select vector element triggers
+  spawnArrow.addEventListener('click', () => {
+    addArrowToBoard(
+      "M 10 35 L 230 35",
+      "230,35 218,28 218,42",
+      250, 70,
+      "Flow Arrow",
+      100, 150
+    );
+  });
+
+  spawnZigzag.addEventListener('click', () => {
+    addArrowToBoard(
+      "M 10 10 L 110 60 L 150 15 L 270 45",
+      "270,45 258,38 258,52",
+      290, 70,
+      "Zigzag Flow",
+      120, 120
+    );
   });
 
   // Drag and Drop files onto whiteboard

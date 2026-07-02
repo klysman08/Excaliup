@@ -8,6 +8,29 @@
   let isEnabled = true; // Enabled by default
   const activeGifs = new Map(); // fileId -> GifPlayer instance
 
+  const currentSettings = {
+    gifsEnabled: true,
+    flowEnabled: true,
+    flowStyle: 'particles',
+    flowSpeed: 'medium'
+  };
+
+  let overlayAnimationFrameId = null;
+  let flowOffset = 0;
+
+  // Load settings from localStorage if available
+  try {
+    const saved = localStorage.getItem('excaligif_settings');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      Object.assign(currentSettings, parsed);
+      isEnabled = currentSettings.gifsEnabled;
+    }
+  } catch (e) {
+    console.error("[ExcaliGif] Error loading saved settings:", e);
+  }
+
+
   class GifPlayer {
     constructor(fileId, cacheEntry, app) {
       this.fileId = fileId;
@@ -285,8 +308,282 @@
       console.log("[ExcaliGif] Hooked Excalidraw instance!");
       currentApp = app;
       hookImageCache(app);
+      
+      // Start flow overlay loop if enabled on startup
+      if (isEnabled && currentSettings.flowEnabled) {
+        startOverlayLoop();
+      }
     }
     scanAndCleanupGifs();
+  }
+
+  // Helper functions for path and flow animations
+  function shouldAnimateElement(el, allElements) {
+    if (el.isDeleted) return false;
+    if (el.type !== 'arrow' && el.type !== 'line') return false;
+    if (!el.points || el.points.length < 2) return false;
+    
+    // Dash / Dotted style triggers flow automatically
+    if (el.strokeStyle === 'dashed' || el.strokeStyle === 'dotted') {
+      return true;
+    }
+    
+    // Label triggers flow: checks if arrow text contains '>>', '[flow]', 'flow', '~>'
+    if (el.boundElements) {
+      for (const bound of el.boundElements) {
+        if (bound.type === 'text') {
+          const textEl = allElements.find(e => e.id === bound.id && !e.isDeleted);
+          if (textEl && textEl.text) {
+            const lowerText = textEl.text.toLowerCase();
+            if (lowerText.includes('>>') || lowerText.includes('[flow]') || lowerText.includes('flow') || lowerText.includes('~>')) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    
+    return false;
+  }
+
+  function getPathPoints(el) {
+    let minX = Infinity, maxX = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    for (const p of el.points) {
+      if (p[0] < minX) minX = p[0];
+      if (p[0] > maxX) maxX = p[0];
+      if (p[1] < minY) minY = p[1];
+      if (p[1] > maxY) maxY = p[1];
+    }
+    
+    const centerX = el.x + (minX + maxX) / 2;
+    const centerY = el.y + (minY + maxY) / 2;
+    
+    const cos = el.angle ? Math.cos(el.angle) : 1;
+    const sin = el.angle ? Math.sin(el.angle) : 0;
+    
+    return el.points.map(p => {
+      const ux = el.x + p[0];
+      const uy = el.y + p[1];
+      if (el.angle) {
+        const rx = ux - centerX;
+        const ry = uy - centerY;
+        return {
+          x: centerX + (rx * cos - ry * sin),
+          y: centerY + (rx * sin + ry * cos)
+        };
+      } else {
+        return { x: ux, y: uy };
+      }
+    });
+  }
+
+  function getPathGeometry(absPoints) {
+    const segments = [];
+    let totalLength = 0;
+    
+    for (let i = 0; i < absPoints.length - 1; i++) {
+      const p1 = absPoints[i];
+      const p2 = absPoints[i+1];
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const length = Math.sqrt(dx * dx + dy * dy);
+      
+      segments.push({
+        start: p1,
+        end: p2,
+        length: length,
+        dx: length > 0 ? dx / length : 0,
+        dy: length > 0 ? dy / length : 0
+      });
+      totalLength += length;
+    }
+    
+    return { segments, totalLength };
+  }
+
+  function getPointAtLength(geometry, dist) {
+    if (geometry.totalLength === 0 || geometry.segments.length === 0) {
+      return { x: 0, y: 0, dx: 0, dy: 0 };
+    }
+    
+    let d = dist % geometry.totalLength;
+    if (d < 0) d += geometry.totalLength;
+    
+    let accumulated = 0;
+    for (const seg of geometry.segments) {
+      if (accumulated + seg.length >= d) {
+        const t = seg.length > 0 ? (d - accumulated) / seg.length : 0;
+        return {
+          x: seg.start.x + t * (seg.end.x - seg.start.x),
+          y: seg.start.y + t * (seg.end.y - seg.start.y),
+          dx: seg.dx,
+          dy: seg.dy
+        };
+      }
+      accumulated += seg.length;
+    }
+    
+    const lastSeg = geometry.segments[geometry.segments.length - 1];
+    return { x: lastSeg.end.x, y: lastSeg.end.y, dx: lastSeg.dx, dy: lastSeg.dy };
+  }
+
+  function startOverlayLoop() {
+    if (overlayAnimationFrameId) return;
+    
+    let lastTime = 0;
+    
+    function step(timestamp) {
+      if (!lastTime) lastTime = timestamp;
+      const dt = timestamp - lastTime;
+      lastTime = timestamp;
+      
+      let speed = 2; // medium
+      if (currentSettings.flowSpeed === 'slow') speed = 0.8;
+      if (currentSettings.flowSpeed === 'fast') speed = 4;
+      
+      flowOffset += speed * (dt / 16.666);
+      
+      drawOverlay(flowOffset);
+      
+      overlayAnimationFrameId = requestAnimationFrame(step);
+    }
+    
+    overlayAnimationFrameId = requestAnimationFrame(step);
+  }
+
+  function stopOverlayLoop() {
+    if (overlayAnimationFrameId) {
+      cancelAnimationFrame(overlayAnimationFrameId);
+      overlayAnimationFrameId = null;
+    }
+    // Clear overlay canvas
+    const overlayCanvas = document.getElementById('ExcaliGifOverlayCanvas');
+    if (overlayCanvas) {
+      const ctx = overlayCanvas.getContext('2d');
+      ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    }
+  }
+
+  function drawOverlay(offset) {
+    const interactiveCanvas = document.querySelector('.excalidraw__canvas.interactive');
+    if (!interactiveCanvas || !currentApp || !isEnabled || !currentSettings.flowEnabled) {
+      const overlayCanvas = document.getElementById('ExcaliGifOverlayCanvas');
+      if (overlayCanvas) {
+        const ctx = overlayCanvas.getContext('2d');
+        ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+      }
+      return;
+    }
+    
+    let overlayCanvas = document.getElementById('ExcaliGifOverlayCanvas');
+    if (!overlayCanvas) {
+      overlayCanvas = document.createElement('canvas');
+      overlayCanvas.id = 'ExcaliGifOverlayCanvas';
+      overlayCanvas.style.position = 'absolute';
+      overlayCanvas.style.top = '0';
+      overlayCanvas.style.left = '0';
+      overlayCanvas.style.pointerEvents = 'none';
+      interactiveCanvas.parentNode.insertBefore(overlayCanvas, interactiveCanvas.nextSibling);
+      
+      if (interactiveCanvas.parentNode && window.getComputedStyle(interactiveCanvas.parentNode).position === 'static') {
+        interactiveCanvas.parentNode.style.position = 'relative';
+      }
+    }
+    
+    const width = interactiveCanvas.clientWidth;
+    const height = interactiveCanvas.clientHeight;
+    if (overlayCanvas.width !== width * window.devicePixelRatio || overlayCanvas.height !== height * window.devicePixelRatio) {
+      overlayCanvas.width = width * window.devicePixelRatio;
+      overlayCanvas.height = height * window.devicePixelRatio;
+      overlayCanvas.style.width = `${width}px`;
+      overlayCanvas.style.height = `${height}px`;
+    }
+    
+    const ctx = overlayCanvas.getContext('2d');
+    ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    
+    ctx.save();
+    ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    
+    const zoomVal = currentApp.state.zoom ? currentApp.state.zoom.value : 1;
+    const scrollXVal = currentApp.state.scrollX || 0;
+    const scrollYVal = currentApp.state.scrollY || 0;
+    
+    ctx.scale(zoomVal, zoomVal);
+    ctx.translate(scrollXVal, scrollYVal);
+    
+    let elements = [];
+    if (currentApp.api) {
+      elements = currentApp.api.getSceneElements();
+    }
+    
+    for (const el of elements) {
+      if (shouldAnimateElement(el, elements)) {
+        const absPoints = getPathPoints(el);
+        const geometry = getPathGeometry(absPoints);
+        
+        if (geometry.totalLength > 0) {
+          if (currentSettings.flowStyle === 'particles') {
+            drawParticles(ctx, el, geometry, offset);
+          } else if (currentSettings.flowStyle === 'dashes') {
+            drawDashes(ctx, el, geometry, offset);
+          }
+        }
+      }
+    }
+    
+    ctx.restore();
+  }
+
+  function drawParticles(ctx, el, geometry, offset) {
+    const strokeColor = el.strokeColor || '#1e1e1e';
+    const strokeWidth = el.strokeWidth || 2;
+    
+    ctx.save();
+    ctx.fillStyle = strokeColor;
+    
+    ctx.shadowColor = strokeColor;
+    ctx.shadowBlur = 6;
+    
+    const spacing = 50; // pixels
+    const radius = Math.max(2.5, strokeWidth * 0.85);
+    const totalLength = geometry.totalLength;
+    
+    let d = offset % spacing;
+    while (d < totalLength) {
+      const pt = getPointAtLength(geometry, d);
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      d += spacing;
+    }
+    
+    ctx.restore();
+  }
+
+  function drawDashes(ctx, el, geometry, offset) {
+    const strokeColor = el.strokeColor || '#1e1e1e';
+    const strokeWidth = el.strokeWidth || 2;
+    
+    ctx.save();
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = strokeWidth + 0.8;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    
+    ctx.setLineDash([8, 8]);
+    ctx.lineDashOffset = -offset;
+    
+    ctx.beginPath();
+    const firstPt = geometry.segments[0].start;
+    ctx.moveTo(firstPt.x, firstPt.y);
+    for (const seg of geometry.segments) {
+      ctx.lineTo(seg.end.x, seg.end.y);
+    }
+    ctx.stroke();
+    
+    ctx.restore();
   }
 
   // Poll for Excalidraw instance
@@ -297,7 +594,44 @@
     const targetEnabled = e.detail.enabled;
     if (isEnabled === targetEnabled) return;
     isEnabled = targetEnabled;
+    currentSettings.gifsEnabled = isEnabled;
+    
+    try {
+      localStorage.setItem('excaligif_settings', JSON.stringify(currentSettings));
+    } catch (err) {}
+    
     console.log("[ExcaliGif] Enabled state toggled to:", isEnabled);
+    
+    if (isEnabled) {
+      for (const player of activeGifs.values()) {
+        player.start();
+      }
+      if (currentSettings.flowEnabled) {
+        startOverlayLoop();
+      }
+    } else {
+      for (const player of activeGifs.values()) {
+        player.stop();
+      }
+      stopOverlayLoop();
+    }
+    
+    if (currentApp) {
+      currentApp.triggerRender(true);
+    }
+  });
+
+  // Listen for Update Settings Event from Content Script
+  document.addEventListener('ExcaliGifUpdateSettings', (e) => {
+    const newSettings = e.detail;
+    Object.assign(currentSettings, newSettings);
+    isEnabled = currentSettings.gifsEnabled;
+    
+    try {
+      localStorage.setItem('excaligif_settings', JSON.stringify(currentSettings));
+    } catch (err) {}
+    
+    console.log("[ExcaliGif] Settings updated:", currentSettings);
     
     if (isEnabled) {
       for (const player of activeGifs.values()) {
@@ -307,6 +641,12 @@
       for (const player of activeGifs.values()) {
         player.stop();
       }
+    }
+    
+    if (isEnabled && currentSettings.flowEnabled) {
+      startOverlayLoop();
+    } else {
+      stopOverlayLoop();
     }
     
     if (currentApp) {
@@ -319,8 +659,10 @@
     const reply = {
       connected: !!currentApp,
       enabled: isEnabled,
-      activeGifCount: activeGifs.size
+      activeGifCount: activeGifs.size,
+      settings: currentSettings
     };
     document.dispatchEvent(new CustomEvent('ExcaliGifStatusResponse', { detail: reply }));
   });
 })();
+

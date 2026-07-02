@@ -42,6 +42,40 @@
       </div>
     </div>
 
+    <!-- Flow Animations Card -->
+    <div class="card">
+      <div class="card-row">
+        <div class="card-label-group">
+          <div class="card-title">Line & Arrow Flow</div>
+          <div class="card-desc">Animate information flow along paths</div>
+        </div>
+        <div class="toggle-container">
+          <label class="switch">
+            <input type="checkbox" id="flowToggle" checked disabled>
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="flow-settings-group" id="flowSettingsGroup">
+        <div class="settings-row">
+          <span>Flow Style</span>
+          <select id="flowStyle">
+            <option value="particles">Particles</option>
+            <option value="dashes">Marching Ants</option>
+          </select>
+        </div>
+        <div class="settings-row">
+          <span>Flow Speed</span>
+          <select id="flowSpeed">
+            <option value="slow">Slow</option>
+            <option value="medium" selected>Medium</option>
+            <option value="fast">Fast</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+
     <!-- Stats Panel -->
     <div class="stats-panel">
       <div class="stat-item">

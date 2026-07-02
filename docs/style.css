@@ -1112,3 +1112,35 @@ input:disabled + .sim-slider {
     grid-template-columns: 1fr;
   }
 }
+
+/* Animated Flow Arrows & Vector Elements */
+.canvas-element svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.flow-arrow-line {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke 0.3s ease;
+}
+
+.flow-arrow-head {
+  transition: fill 0.3s ease;
+}
+
+/* Marching Ants Animation */
+.marching-ants {
+  animation: simMarch 0.8s linear infinite;
+}
+
+@keyframes simMarch {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -16;
+  }
+}
+

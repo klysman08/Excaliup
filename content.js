@@ -10,6 +10,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const event = new CustomEvent('ExcaliGifToggleState', { detail: { enabled: message.enabled } });
     document.dispatchEvent(event);
     sendResponse({ status: "forwarded" });
+  } else if (message.action === "updateSettings") {
+    const event = new CustomEvent('ExcaliGifUpdateSettings', { detail: message.settings });
+    document.dispatchEvent(event);
+    sendResponse({ status: "forwarded" });
   } else if (message.action === "getStatus") {
     let responded = false;
     

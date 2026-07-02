@@ -7,6 +7,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   const gifToggle = document.getElementById('gifToggle');
   const gifCount = document.getElementById('gifCount');
   const engineStatus = document.getElementById('engineStatus');
+  
+  const flowToggle = document.getElementById('flowToggle');
+  const flowStyle = document.getElementById('flowStyle');
+  const flowSpeed = document.getElementById('flowSpeed');
+  const flowSettingsGroup = document.getElementById('flowSettingsGroup');
 
   // Query the current active tab
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -37,17 +42,47 @@ document.addEventListener('DOMContentLoaded', async () => {
     statusText.textContent = status.connected ? "Excalidraw Connected" : "Canvas Loading...";
     
     gifToggle.disabled = !status.connected;
-    gifToggle.checked = status.enabled;
+    flowToggle.disabled = !status.connected;
+    flowStyle.disabled = !status.connected;
+    flowSpeed.disabled = !status.connected;
+
+    // Load current settings from response or use defaults
+    const settings = status.settings || {
+      gifsEnabled: status.enabled,
+      flowEnabled: true,
+      flowStyle: 'particles',
+      flowSpeed: 'medium'
+    };
+
+    gifToggle.checked = settings.gifsEnabled;
+    flowToggle.checked = settings.flowEnabled;
+    flowStyle.value = settings.flowStyle;
+    flowSpeed.value = settings.flowSpeed;
+    flowSettingsGroup.style.display = settings.flowEnabled ? 'flex' : 'none';
+
     gifCount.textContent = status.activeGifCount;
-    engineStatus.textContent = status.enabled ? "Running" : "Paused";
+    engineStatus.textContent = settings.gifsEnabled ? "Running" : "Paused";
     
-    // Add toggle switch listener
-    gifToggle.onchange = () => {
-      const enabled = gifToggle.checked;
-      chrome.tabs.sendMessage(tab.id, { action: "toggleState", enabled: enabled }, (response) => {
-        engineStatus.textContent = enabled ? "Running" : "Paused";
+    // Broadcast setting changes
+    const updateSettings = () => {
+      const currentSettings = {
+        gifsEnabled: gifToggle.checked,
+        flowEnabled: flowToggle.checked,
+        flowStyle: flowStyle.value,
+        flowSpeed: flowSpeed.value
+      };
+      
+      flowSettingsGroup.style.display = currentSettings.flowEnabled ? 'flex' : 'none';
+      
+      chrome.tabs.sendMessage(tab.id, { action: "updateSettings", settings: currentSettings }, (response) => {
+        engineStatus.textContent = currentSettings.gifsEnabled ? "Running" : "Paused";
       });
     };
+
+    gifToggle.onchange = updateSettings;
+    flowToggle.onchange = updateSettings;
+    flowStyle.onchange = updateSettings;
+    flowSpeed.onchange = updateSettings;
   }
 
   function showDisconnected(reason) {
@@ -56,7 +91,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     gifToggle.disabled = true;
     gifToggle.checked = false;
+    flowToggle.disabled = true;
+    flowToggle.checked = false;
+    flowStyle.disabled = true;
+    flowSpeed.disabled = true;
+    flowSettingsGroup.style.display = 'none';
     gifCount.textContent = "0";
     engineStatus.textContent = "Inactive";
   }
 });
+

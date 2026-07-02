@@ -150,6 +150,39 @@
                   </div>
                 </div>
 
+                <!-- Flow Animations Card -->
+                <div class="sim-card">
+                  <div class="sim-row">
+                    <div>
+                      <h4 class="sim-title">Line & Arrow Flow</h4>
+                      <p class="sim-desc" style="margin:0;">Animate information flow along paths</p>
+                    </div>
+                    <div>
+                      <label class="sim-switch">
+                        <input type="checkbox" id="flowToggle" checked>
+                        <span class="sim-slider"></span>
+                      </label>
+                    </div>
+                  </div>
+                  <div class="flow-settings-group" id="flowSettingsGroup" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--card-border); padding-top: 10px;">
+                    <div class="settings-row" style="display: flex; justify-content: space-between; align-items: center;">
+                      <span style="font-size: 10px; color: var(--text-muted); font-weight: 500;">Flow Style</span>
+                      <select id="flowStyle" class="sim-select" style="font-size: 10px; padding: 3px 6px;">
+                        <option value="particles">Particles</option>
+                        <option value="dashes">Marching Ants</option>
+                      </select>
+                    </div>
+                    <div class="settings-row" style="display: flex; justify-content: space-between; align-items: center;">
+                      <span style="font-size: 10px; color: var(--text-muted); font-weight: 500;">Flow Speed</span>
+                      <select id="flowSpeed" class="sim-select" style="font-size: 10px; padding: 3px 6px;">
+                        <option value="slow">Slow</option>
+                        <option value="medium" selected>Medium</option>
+                        <option value="fast">Fast</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
                 <!-- Stats Dashboard -->
                 <div class="sim-stats">
                   <div class="sim-stat-box">
@@ -184,21 +217,37 @@
         </div>
       </div>
 
-      <!-- Preset GIF Selector -->
-      <div class="sample-gifs-box">
-        <h3 class="sample-gifs-title">👾 Click to Spawn Pixel Stickers:</h3>
-        <div class="sample-list">
-          <div class="sample-item" id="sampleHeart" title="Click to spawn Heart sticker">
-            <img src="https://static.klipy.com/ii/4493325008d34b7bf8cd6813cd5c1619/87/ad/71WOMbwke67fmBx.gif" alt="Pixel Heart inline preview">
-            <div class="sample-name">Pixel Heart</div>
+      <!-- Preset GIF Selector & Vector Spawner -->
+      <div class="sample-gifs-box" style="display: flex; flex-wrap: wrap; gap: 30px;">
+        <div style="flex: 1; min-width: 250px;">
+          <h3 class="sample-gifs-title">👾 Click to Spawn Pixel Stickers:</h3>
+          <div class="sample-list">
+            <div class="sample-item" id="sampleHeart" title="Click to spawn Heart sticker">
+              <img src="https://static.klipy.com/ii/4493325008d34b7bf8cd6813cd5c1619/87/ad/71WOMbwke67fmBx.gif" alt="Pixel Heart inline preview">
+              <div class="sample-name">Pixel Heart</div>
+            </div>
+            <div class="sample-item" id="sampleCoin" title="Click to spawn Coin sticker">
+              <img src="https://static.klipy.com/ii/71b2873e478b9d8d0482ea3ec777ba7f/15/36/izQlaTmV.gif" alt="Retro Coin inline preview">
+              <div class="sample-name">Retro Coin</div>
+            </div>
+            <div class="sample-item" id="sampleGhost" title="Click to spawn Ghost sticker">
+              <img src="https://static.klipy.com/ii/f87f46a2c5aeaeed4c68910815f73eaf/b2/8e/ubnyCmzy.gif" alt="Mini Ghost inline preview">
+              <div class="sample-name">Mini Ghost</div>
+            </div>
           </div>
-          <div class="sample-item" id="sampleCoin" title="Click to spawn Coin sticker">
-            <img src="https://static.klipy.com/ii/71b2873e478b9d8d0482ea3ec777ba7f/15/36/izQlaTmV.gif" alt="Retro Coin inline preview">
-            <div class="sample-name">Retro Coin</div>
-          </div>
-          <div class="sample-item" id="sampleGhost" title="Click to spawn Ghost sticker">
-            <img src="https://static.klipy.com/ii/f87f46a2c5aeaeed4c68910815f73eaf/b2/8e/ubnyCmzy.gif" alt="Mini Ghost inline preview">
-            <div class="sample-name">Mini Ghost</div>
+        </div>
+        
+        <div style="flex: 1; min-width: 250px;">
+          <h3 class="sample-gifs-title">📐 Spawn Vector Elements:</h3>
+          <div class="sample-list" style="display: flex; gap: 15px;">
+            <div class="sample-item" id="spawnArrow" title="Click to spawn simple flow arrow">
+              <span style="font-size: 2.2rem; display: block; margin-top: 8px;">➔</span>
+              <div class="sample-name" style="margin-top: 10px;">Flow Arrow</div>
+            </div>
+            <div class="sample-item" id="spawnZigzag" title="Click to spawn multi-point zigzag flow">
+              <span style="font-size: 2.2rem; display: block; margin-top: 8px;">⤳</span>
+              <div class="sample-name" style="margin-top: 10px;">Zigzag Flow</div>
+            </div>
           </div>
         </div>
       </div>
