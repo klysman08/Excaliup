@@ -4,29 +4,30 @@
 (function() {
   console.log("[ExcaliGif] Inject script loaded.");
 
-  let currentApp = null;
-  let isEnabled = true; // Enabled by default
-  const activeGifs = new Map(); // fileId -> GifPlayer instance
+  const Core = window.ExcaliGifCore;
+  if (!Core) {
+    console.error('[ExcaliGif] Runtime core is unavailable.');
+    return;
+  }
 
-  const currentSettings = {
-    gifsEnabled: true,
-    flowEnabled: true,
-    flowStyle: 'particles',
-    flowSpeed: 'medium',
-    particleSize: 3,
-    particleSpacing: 50,
-    glowIntensity: 'medium',
-    flowDirection: 'forward',
-    gifSpeed: 1
-  };
+  let currentApp = null;
+  const activeGifs = new Map(); // fileId -> GifPlayer instance
+  const currentSettings = { ...Core.DEFAULT_SETTINGS };
 
   let overlayAnimationFrameId = null;
+  let gifSchedulerTimer = null;
   let flowOffset = 0;
+  let lastFlowDrawAt = 0;
+  const flowFrameBudget = new Core.AdaptiveFrameBudget();
+  const geometryCache = new Map();
 
-  // Per-element animation assignments: elementId -> { style: string }
+  // Per-element animation assignments: elementId -> animation configuration
   const animatedElements = new Map();
   let toolbarElement = null;
   let lastSelectedId = null;
+  let toolbarRenderSignature = '';
+  let animatedElementsRevision = 0;
+  let saveAnimatedElementsTimer = null;
 
   // Load animated elements from localStorage
   try {
@@ -34,21 +35,34 @@
     if (saved) {
       const parsed = JSON.parse(saved);
       for (const [id, config] of Object.entries(parsed)) {
-        animatedElements.set(id, config);
+        animatedElements.set(id, Core.normalizeElementConfig(config));
       }
+      animatedElementsRevision++;
     }
   } catch (e) {
     console.error("[ExcaliGif] Error loading animated elements:", e);
   }
 
-  function saveAnimatedElements() {
-    try {
-      const obj = {};
-      for (const [id, config] of animatedElements.entries()) {
-        obj[id] = config;
+  function saveAnimatedElements(immediate = false) {
+    const write = () => {
+      saveAnimatedElementsTimer = null;
+      try {
+        const obj = {};
+        for (const [id, config] of animatedElements.entries()) {
+          obj[id] = config;
+        }
+        localStorage.setItem('excaligif_animated_elements', JSON.stringify(obj));
+      } catch (error) {
+        console.error('[ExcaliGif] Error saving animated elements:', error);
       }
-      localStorage.setItem('excaligif_animated_elements', JSON.stringify(obj));
-    } catch (e) {}
+    };
+
+    if (saveAnimatedElementsTimer) clearTimeout(saveAnimatedElementsTimer);
+    if (immediate) {
+      write();
+    } else {
+      saveAnimatedElementsTimer = setTimeout(write, 150);
+    }
   }
 
   // Load settings from localStorage if available
@@ -56,8 +70,7 @@
     const saved = localStorage.getItem('excaligif_settings');
     if (saved) {
       const parsed = JSON.parse(saved);
-      Object.assign(currentSettings, parsed);
-      isEnabled = currentSettings.gifsEnabled;
+      Object.assign(currentSettings, Core.normalizeSettings(parsed, currentSettings));
     }
   } catch (e) {
     console.error("[ExcaliGif] Error loading saved settings:", e);
@@ -69,64 +82,73 @@
       this.fileId = fileId;
       this.cacheEntry = cacheEntry;
       this.app = app;
-      
       this.originalImage = cacheEntry.image;
       this.width = 0;
       this.height = 0;
       this.frames = [];
       this.currentFrameIdx = 0;
-      this.timer = null;
       this.activeCanvas = null;
       this.activeCtx = null;
       this.isLoaded = false;
       this.isDestroyed = false;
-      
+      this.isPlaying = false;
+      this.nextFrameAt = Infinity;
+      this.decodeGeneration = 0;
+      this.abortController = null;
       this.loadPromise = this.init();
     }
-    
+
     async init() {
       const src = this.originalImage.src;
+      const generation = ++this.decodeGeneration;
+      if (this.abortController) this.abortController.abort();
+      this.abortController = null;
+
       // Skip empty, invalid, or standard transparent 1x1 GIF placeholder sources
       if (!src || src.startsWith('data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7')) {
+        this.lastSrc = src;
         console.log("[ExcaliGif] Skipping empty/placeholder image source for fileId:", this.fileId);
         return;
       }
+
+      const abortController = new AbortController();
+      this.abortController = abortController;
       this.lastSrc = src;
-      
+
       try {
-        // Reset player state in case of re-initialization
-        if (this.timer) {
-          clearTimeout(this.timer);
-          this.timer = null;
-        }
-        this.frames = [];
-        this.currentFrameIdx = 0;
-        this.isLoaded = false;
-        
         console.log("[ExcaliGif] Fetching GIF data for fileId:", this.fileId, "src:", src.substring(0, 100));
-        const response = await fetch(src);
+        const response = await fetch(src, { signal: abortController.signal });
+        if (!response.ok && !src.startsWith('data:') && !src.startsWith('blob:')) {
+          throw new Error(`GIF request failed with status ${response.status}`);
+        }
         const arrayBuffer = await response.arrayBuffer();
+        if (this.isDestroyed || generation !== this.decodeGeneration) return;
         const bytes = new Uint8Array(arrayBuffer);
-        
+
         // window.GifReader is loaded by omggif.js in the page scope
         if (typeof window.GifReader === 'undefined' && typeof GifReader === 'undefined') {
           throw new Error("GifReader is not defined in the scope.");
         }
         const ReaderClass = typeof window.GifReader !== 'undefined' ? window.GifReader : GifReader;
         const reader = new ReaderClass(bytes);
-        this.width = reader.width;
-        this.height = reader.height;
-        
+        const width = reader.width;
+        const height = reader.height;
         const numFrames = reader.numFrames();
-        console.log(`[ExcaliGif] Decoding GIF: ${this.width}x${this.height}, ${numFrames} frames`);
+        console.log(`[ExcaliGif] Decoding GIF: ${width}x${height}, ${numFrames} frames`);
         if (numFrames <= 0) return;
-        
-        const accumBuffer = new Uint8ClampedArray(this.width * this.height * 4);
+
+        const decodedFrames = [];
+        const accumBuffer = new Uint8ClampedArray(width * height * 4);
         let backupBuffer = null;
-        
+
         for (let i = 0; i < numFrames; i++) {
+          if (this.isDestroyed || generation !== this.decodeGeneration) {
+            this.releaseFrames(decodedFrames);
+            return;
+          }
+
           const info = reader.frameInfo(i);
-          
+
           // 1. Handle disposal of previous frame
           if (i > 0) {
             const prevInfo = reader.frameInfo(i - 1);
@@ -134,7 +156,7 @@
               // Restore to background (clear the subrect to transparent)
               for (let y = prevInfo.y; y < prevInfo.y + prevInfo.height; y++) {
                 for (let x = prevInfo.x; x < prevInfo.x + prevInfo.width; x++) {
-                  const idx = (y * this.width + x) * 4;
+                  const idx = (y * width + x) * 4;
                   accumBuffer[idx] = 0;
                   accumBuffer[idx + 1] = 0;
                   accumBuffer[idx + 2] = 0;
@@ -150,119 +172,188 @@
           // 2. Backup buffer before drawing current frame if its disposal is 3
           if (info.disposal === 3) {
             if (!backupBuffer) {
-              backupBuffer = new Uint8ClampedArray(this.width * this.height * 4);
+              backupBuffer = new Uint8ClampedArray(width * height * 4);
             }
             backupBuffer.set(accumBuffer);
           }
-          
+
           // 3. Decode frame pixels directly into the accumulated buffer
           reader.decodeAndBlitFrameRGBA(i, accumBuffer);
-          
+
           // 4. Draw accumBuffer onto a frame canvas
           const frameCanvas = document.createElement('canvas');
-          frameCanvas.width = this.width;
-          frameCanvas.height = this.height;
+          frameCanvas.width = width;
+          frameCanvas.height = height;
           const frameCtx = frameCanvas.getContext('2d');
-          const imgData = frameCtx.createImageData(this.width, this.height);
+          const imgData = frameCtx.createImageData(width, height);
           imgData.data.set(accumBuffer);
           frameCtx.putImageData(imgData, 0, 0);
-          
+
           // Delay is in hundredths of a second (10ms)
           const baseDelay = info.delay * 10 || 100; // default to 100ms
-          
-          this.frames.push({
+
+          decodedFrames.push({
             image: frameCanvas,
             delay: baseDelay
           });
         }
-        
+
+        if (this.isDestroyed || generation !== this.decodeGeneration) {
+          this.releaseFrames(decodedFrames);
+          return;
+        }
+
+        this.releaseFrames();
+        this.frames = decodedFrames;
+        this.width = width;
+        this.height = height;
+        this.currentFrameIdx = 0;
+
         // Setup active canvas that Excalidraw draws
-        this.activeCanvas = document.createElement('canvas');
-        this.activeCanvas.width = this.width;
-        this.activeCanvas.height = this.height;
-        
+        const activeCanvas = document.createElement('canvas');
+        activeCanvas.width = width;
+        activeCanvas.height = height;
+
         // Mock standard HTMLImageElement properties
-        Object.defineProperties(this.activeCanvas, {
+        Object.defineProperties(activeCanvas, {
           tagName: { value: 'IMG' },
           complete: { value: true },
-          naturalWidth: { value: this.width },
-          naturalHeight: { value: this.height }
+          naturalWidth: { value: width },
+          naturalHeight: { value: height }
         });
-        
-        this.activeCtx = this.activeCanvas.getContext('2d');
+
+        if (this.activeCanvas) {
+          this.activeCanvas.width = 0;
+          this.activeCanvas.height = 0;
+        }
+        this.activeCanvas = activeCanvas;
+        this.activeCtx = activeCanvas.getContext('2d');
         this.isLoaded = true;
-        
-        if (isEnabled) {
+
+        if (currentSettings.gifsEnabled) {
           this.start();
         }
       } catch (e) {
-        console.error("[ExcaliGif] Error initializing player for fileId " + this.fileId, e);
+        if (e.name !== 'AbortError') {
+          console.error("[ExcaliGif] Error initializing player for fileId " + this.fileId, e);
+        }
+      } finally {
+        if (this.abortController === abortController) this.abortController = null;
       }
     }
-    
-    start() {
-      if (this.isDestroyed || !this.isLoaded) return;
-      
-      // Swap out the image in Excalidraw cache
-      this.cacheEntry.image = this.activeCanvas;
-      
-      // Clear any previous loop
-      if (this.timer) clearTimeout(this.timer);
-      
-      this.tick();
-    }
-    
-    tick() {
-      if (this.isDestroyed || !isEnabled) return;
-      
-      const frame = this.frames[this.currentFrameIdx];
-      this.activeCtx.clearRect(0, 0, this.width, this.height);
-      this.activeCtx.drawImage(frame.image, 0, 0);
-      
-      // Force Excalidraw element cache refresh by updating element version immutably
-      if (this.app.api) {
-        const elements = this.app.api.getSceneElements();
-        let changed = false;
-        
-        const newElements = elements.map(el => {
-          if (el.type === 'image' && el.fileId === this.fileId) {
-            changed = true;
-            return {
-              ...el,
-              version: el.version + 1,
-              updated: Date.now()
-            };
-          }
-          return el;
-        });
-        
-        if (changed) {
-          this.app.api.updateScene({ elements: newElements });
+
+    releaseFrames(frames = this.frames) {
+      for (const frame of frames) {
+        if (frame.image && typeof frame.image.close === 'function') {
+          frame.image.close();
+        } else if (frame.image) {
+          frame.image.width = 0;
+          frame.image.height = 0;
         }
       }
-      
-      this.app.triggerRender(true);
-      
-      this.currentFrameIdx = (this.currentFrameIdx + 1) % this.frames.length;
-      // Apply GIF playback speed multiplier
-      const speedMultiplier = currentSettings.gifSpeed || 1;
-      const adjustedDelay = Math.max(10, Math.round(frame.delay / speedMultiplier));
-      this.timer = setTimeout(() => this.tick(), adjustedDelay);
+      if (frames === this.frames) this.frames = [];
     }
-    
-    stop() {
-      if (this.timer) {
-        clearTimeout(this.timer);
-        this.timer = null;
+
+    start() {
+      if (this.isDestroyed || !this.isLoaded) return;
+
+      // Swap out the image in Excalidraw cache
+      this.cacheEntry.image = this.activeCanvas;
+      this.isPlaying = true;
+      this.nextFrameAt = performance.now();
+      scheduleGifTick();
+    }
+
+    renderDue(now, tolerance = 4) {
+      if (
+        this.isDestroyed ||
+        !this.isLoaded ||
+        !this.isPlaying ||
+        !currentSettings.gifsEnabled ||
+        this.nextFrameAt - now > tolerance
+      ) {
+        return false;
       }
+
+      const frame = this.frames[this.currentFrameIdx];
+      if (!frame) return false;
+      this.activeCtx.clearRect(0, 0, this.width, this.height);
+      this.activeCtx.drawImage(frame.image, 0, 0);
+
+      this.currentFrameIdx = (this.currentFrameIdx + 1) % this.frames.length;
+      const speedMultiplier = currentSettings.gifSpeed || 1;
+      this.nextFrameAt = now + Math.max(10, Math.round(frame.delay / speedMultiplier));
+      return true;
+    }
+
+    stop() {
+      this.isPlaying = false;
+      this.nextFrameAt = Infinity;
       // Restore original static image
-      this.cacheEntry.image = this.originalImage;
+      if (this.cacheEntry) this.cacheEntry.image = this.originalImage;
+      scheduleGifTick();
     }
-    
+
     destroy() {
-      this.isDestroyed = true;
       this.stop();
+      this.isDestroyed = true;
+      this.decodeGeneration++;
+      if (this.abortController) this.abortController.abort();
+      this.abortController = null;
+      this.releaseFrames();
+      if (this.activeCanvas) {
+        this.activeCanvas.width = 0;
+        this.activeCanvas.height = 0;
+      }
+      this.activeCanvas = null;
+      this.activeCtx = null;
+      this.isLoaded = false;
     }
+  }
+
+  function stopGifScheduler() {
+    if (gifSchedulerTimer) {
+      clearTimeout(gifSchedulerTimer);
+      gifSchedulerTimer = null;
+    }
+  }
+
+  function scheduleGifTick() {
+    stopGifScheduler();
+    if (document.hidden || !currentSettings.gifsEnabled || !currentApp) return;
+
+    let nextFrameAt = Infinity;
+    for (const player of activeGifs.values()) {
+      if (player.isPlaying && player.isLoaded && !player.isDestroyed) {
+        nextFrameAt = Math.min(nextFrameAt, player.nextFrameAt);
+      }
+    }
+    if (!Number.isFinite(nextFrameAt)) return;
+
+    const delay = Math.max(0, nextFrameAt - performance.now());
+    gifSchedulerTimer = setTimeout(runGifScheduler, delay);
+  }
+
+  function runGifScheduler() {
+    gifSchedulerTimer = null;
+    if (document.hidden || !currentSettings.gifsEnabled || !currentApp) return;
+
+    const now = performance.now();
+    const dueFileIds = new Set();
+    for (const [fileId, player] of activeGifs.entries()) {
+      if (player.renderDue(now)) dueFileIds.add(fileId);
+    }
+
+    refreshGifElements(dueFileIds);
+
+    scheduleGifTick();
+  }
+
+  function refreshGifElements(fileIds) {
+    if (!currentApp || !currentApp.api) return;
+    const elements = currentApp.api.getSceneElements();
+    const refresh = Core.buildGifRefreshElements(elements, fileIds);
+    if (refresh.changed) currentApp.api.updateScene({ elements: refresh.elements });
   }
 
   // Traverse DOM up to find Excalidraw class instance
@@ -284,11 +375,10 @@
   }
 
   function hookImageCache(app) {
-    if (app.imageCache && !app.imageCache.isHookedByExcaliGif) {
-      app.imageCache.isHookedByExcaliGif = true;
+    if (app.imageCache && !app.imageCache.excaligifHook) {
       const originalSet = app.imageCache.set;
-      
-      app.imageCache.set = function(fileId, cacheEntry) {
+
+      const wrappedSet = function(fileId, cacheEntry) {
         const res = originalSet.apply(this, arguments);
         if (cacheEntry && cacheEntry.mimeType === 'image/gif') {
           if (!activeGifs.has(fileId)) {
@@ -302,17 +392,20 @@
             if (cacheEntry.image && cacheEntry.image.src && cacheEntry.image.src !== player.lastSrc) {
               console.log("[ExcaliGif] Image source changed for fileId:", fileId, ". Re-initializing...");
               player.originalImage = cacheEntry.image;
-              player.init();
+              player.loadPromise = player.init();
             }
-            
-            if (isEnabled && player.activeCanvas) {
+
+            if (currentSettings.gifsEnabled && player.activeCanvas) {
               cacheEntry.image = player.activeCanvas;
             }
           }
         }
         return res;
       };
-      
+
+      app.imageCache.set = wrappedSet;
+      app.imageCache.excaligifHook = { originalSet, wrappedSet };
+
       // Scan existing GIF cache entries
       for (const [fileId, cacheEntry] of app.imageCache.entries()) {
         if (cacheEntry && cacheEntry.mimeType === 'image/gif' && !activeGifs.has(fileId)) {
@@ -321,6 +414,37 @@
         }
       }
     }
+  }
+
+  function unhookImageCache(app) {
+    const hook = app && app.imageCache && app.imageCache.excaligifHook;
+    if (!hook) return;
+    if (app.imageCache.set === hook.wrappedSet) app.imageCache.set = hook.originalSet;
+    delete app.imageCache.excaligifHook;
+  }
+
+  function detachCurrentApp() {
+    stopGifScheduler();
+    stopOverlayLoop();
+    for (const player of activeGifs.values()) player.destroy();
+    activeGifs.clear();
+    geometryCache.clear();
+    unhookImageCache(currentApp);
+    currentApp = null;
+    toolbarRenderSignature = '';
+  }
+
+  function attachApp(app) {
+    if (app === currentApp) return;
+    if (currentApp) detachCurrentApp();
+
+    console.log("[ExcaliGif] Hooked Excalidraw instance!");
+    currentApp = app;
+    hookImageCache(app);
+    createToolbar();
+    scanAndCleanupGifs();
+    updateToolbar(true);
+    reconcileRuntime();
   }
 
   function scanAndCleanupGifs() {
@@ -337,32 +461,36 @@
       }
     }
     
+    // Avoid erasing persisted assignments while Excalidraw is still hydrating an empty scene.
+    if (elements.length === 0) {
+      reconcileFlowRuntime();
+      return;
+    }
+
     // Clean up animated element entries for deleted elements
     const sceneIds = new Set(elements.filter(e => !e.isDeleted).map(e => e.id));
     let cleaned = false;
     for (const elId of animatedElements.keys()) {
       if (!sceneIds.has(elId)) {
         animatedElements.delete(elId);
+        geometryCache.delete(elId);
         cleaned = true;
       }
     }
-    if (cleaned) saveAnimatedElements();
+    if (cleaned) {
+      animatedElementsRevision++;
+      toolbarRenderSignature = '';
+      saveAnimatedElements(true);
+    }
+    reconcileFlowRuntime();
   }
 
   function checkInstance() {
     const app = findExcalidrawInstance();
     if (app && app !== currentApp) {
-      console.log("[ExcaliGif] Hooked Excalidraw instance!");
-      currentApp = app;
-      hookImageCache(app);
-      
-      // Create the in-canvas animation toolbar
-      createToolbar();
-      
-      // Start flow overlay loop if enabled and there are animated elements
-      if (isEnabled && currentSettings.flowEnabled && animatedElements.size > 0) {
-        startOverlayLoop();
-      }
+      attachApp(app);
+    } else if (!app && currentApp) {
+      detachCurrentApp();
     }
     scanAndCleanupGifs();
   }
@@ -374,146 +502,79 @@
     return animatedElements.has(el.id);
   }
 
-  function getPathPoints(el) {
-    let minX = Infinity, maxX = -Infinity;
-    let minY = Infinity, maxY = -Infinity;
-    for (const p of el.points) {
-      if (p[0] < minX) minX = p[0];
-      if (p[0] > maxX) maxX = p[0];
-      if (p[1] < minY) minY = p[1];
-      if (p[1] > maxY) maxY = p[1];
+  const DEFAULT_ELEMENT_CONFIG = Core.DEFAULT_ELEMENT_CONFIG;
+  const getPointAtLength = Core.getPointAtLength;
+
+  function getCachedGeometry(element) {
+    const cached = geometryCache.get(element.id);
+    if (cached && cached.element === element && cached.version === element.version) {
+      return cached.geometry;
     }
-    
-    const centerX = el.x + (minX + maxX) / 2;
-    const centerY = el.y + (minY + maxY) / 2;
-    
-    const cos = el.angle ? Math.cos(el.angle) : 1;
-    const sin = el.angle ? Math.sin(el.angle) : 0;
-    
-    return el.points.map(p => {
-      const ux = el.x + p[0];
-      const uy = el.y + p[1];
-      if (el.angle) {
-        const rx = ux - centerX;
-        const ry = uy - centerY;
-        return {
-          x: centerX + (rx * cos - ry * sin),
-          y: centerY + (rx * sin + ry * cos)
-        };
-      } else {
-        return { x: ux, y: uy };
-      }
+
+    const geometry = Core.getPathGeometry(Core.getPathPoints(element));
+    geometryCache.set(element.id, {
+      element,
+      version: element.version,
+      geometry
     });
+    return geometry;
   }
 
-  function getPathGeometry(absPoints) {
-    const segments = [];
-    let totalLength = 0;
-    
-    for (let i = 0; i < absPoints.length - 1; i++) {
-      const p1 = absPoints[i];
-      const p2 = absPoints[i+1];
-      const dx = p2.x - p1.x;
-      const dy = p2.y - p1.y;
-      const length = Math.sqrt(dx * dx + dy * dy);
-      
-      segments.push({
-        start: p1,
-        end: p2,
-        length: length,
-        dx: length > 0 ? dx / length : 0,
-        dy: length > 0 ? dy / length : 0
-      });
-      totalLength += length;
+  function getSceneElementsMap() {
+    if (!currentApp) return new Map();
+    if (currentApp.scene && typeof currentApp.scene.getNonDeletedElementsMap === 'function') {
+      return currentApp.scene.getNonDeletedElementsMap();
     }
-    
-    return { segments, totalLength };
+    const elements = currentApp.api ? currentApp.api.getSceneElements() : [];
+    return new Map(elements.filter((element) => !element.isDeleted).map((element) => [element.id, element]));
   }
-
-  function getPointAtLength(geometry, dist) {
-    if (geometry.totalLength === 0 || geometry.segments.length === 0) {
-      return { x: 0, y: 0, dx: 0, dy: 0 };
-    }
-    
-    let d = dist % geometry.totalLength;
-    if (d < 0) d += geometry.totalLength;
-    
-    let accumulated = 0;
-    for (const seg of geometry.segments) {
-      if (accumulated + seg.length >= d) {
-        const t = seg.length > 0 ? (d - accumulated) / seg.length : 0;
-        return {
-          x: seg.start.x + t * (seg.end.x - seg.start.x),
-          y: seg.start.y + t * (seg.end.y - seg.start.y),
-          dx: seg.dx,
-          dy: seg.dy
-        };
-      }
-      accumulated += seg.length;
-    }
-    
-    const lastSeg = geometry.segments[geometry.segments.length - 1];
-    return { x: lastSeg.end.x, y: lastSeg.end.y, dx: lastSeg.dx, dy: lastSeg.dy };
-  }
-
-  const DEFAULT_ELEMENT_CONFIG = {
-    speed: 'medium',
-    direction: 'forward',
-    particleSize: 3,
-    particleSpacing: 50,
-    glowIntensity: 'medium'
-  };
 
   function getElementConfig(elId) {
-    const elConfig = animatedElements.get(elId) || {};
-    return {
-      style: elConfig.style || 'particles',
-      speed: elConfig.speed || DEFAULT_ELEMENT_CONFIG.speed,
-      direction: elConfig.direction || DEFAULT_ELEMENT_CONFIG.direction,
-      particleSize: elConfig.particleSize !== undefined ? elConfig.particleSize : DEFAULT_ELEMENT_CONFIG.particleSize,
-      particleSpacing: elConfig.particleSpacing !== undefined ? elConfig.particleSpacing : DEFAULT_ELEMENT_CONFIG.particleSpacing,
-      glowIntensity: elConfig.glowIntensity || DEFAULT_ELEMENT_CONFIG.glowIntensity
-    };
+    return Core.normalizeElementConfig(animatedElements.get(elId), DEFAULT_ELEMENT_CONFIG);
   }
 
   function getElementOffset(config, globalOffset) {
-    let speed = 2; // medium
-    if (config.speed === 'slow') speed = 0.8;
-    if (config.speed === 'fast') speed = 4;
-    
-    const direction = config.direction || 'forward';
-    if (direction === 'reverse') {
-      return -globalOffset * speed;
-    } else if (direction === 'bounce') {
-      const travel = (globalOffset * speed) % 400;
-      if (travel < 200) {
-        return travel;
-      } else {
-        return 400 - travel;
-      }
-    } else {
-      return globalOffset * speed;
-    }
+    return Core.getElementOffset(config, globalOffset);
   }
 
   function startOverlayLoop() {
-    if (overlayAnimationFrameId) return;
-    
-    let lastTime = 0;
-    
+    if (
+      overlayAnimationFrameId ||
+      document.hidden ||
+      !currentApp ||
+      !currentSettings.flowEnabled ||
+      animatedElements.size === 0
+    ) {
+      return;
+    }
+
+    flowFrameBudget.reset(performance.now());
+    lastFlowDrawAt = 0;
+
     function step(timestamp) {
-      if (!lastTime) lastTime = timestamp;
-      const dt = timestamp - lastTime;
-      lastTime = timestamp;
-      
-      // Increment offset monotonically based on elapsed time
-      flowOffset += (dt / 16.666);
-      
-      drawOverlay(flowOffset);
-      
+      overlayAnimationFrameId = null;
+      if (
+        document.hidden ||
+        !currentApp ||
+        !currentSettings.flowEnabled ||
+        animatedElements.size === 0
+      ) {
+        stopOverlayLoop();
+        return;
+      }
+
+      const frameDelta = lastFlowDrawAt ? timestamp - lastFlowDrawAt : flowFrameBudget.frameInterval;
+      if (!lastFlowDrawAt || frameDelta >= flowFrameBudget.frameInterval - 1) {
+        flowOffset += frameDelta / 16.666;
+        const drawStartedAt = performance.now();
+        drawOverlay(flowOffset);
+        flowFrameBudget.record(timestamp, performance.now() - drawStartedAt, frameDelta);
+        lastFlowDrawAt = timestamp;
+      }
+
       overlayAnimationFrameId = requestAnimationFrame(step);
     }
-    
+
     overlayAnimationFrameId = requestAnimationFrame(step);
   }
 
@@ -528,11 +589,12 @@
       const ctx = overlayCanvas.getContext('2d');
       ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
     }
+    lastFlowDrawAt = 0;
   }
 
   function drawOverlay(offset) {
     const interactiveCanvas = document.querySelector('.excalidraw__canvas.interactive');
-    if (!interactiveCanvas || !currentApp || !isEnabled || !currentSettings.flowEnabled) {
+    if (!interactiveCanvas || !currentApp || !currentSettings.flowEnabled) {
       const overlayCanvas = document.getElementById('ExcaliGifOverlayCanvas');
       if (overlayCanvas) {
         const ctx = overlayCanvas.getContext('2d');
@@ -555,70 +617,110 @@
         interactiveCanvas.parentNode.style.position = 'relative';
       }
     }
-    
+
     const width = interactiveCanvas.clientWidth;
     const height = interactiveCanvas.clientHeight;
-    if (overlayCanvas.width !== width * window.devicePixelRatio || overlayCanvas.height !== height * window.devicePixelRatio) {
-      overlayCanvas.width = width * window.devicePixelRatio;
-      overlayCanvas.height = height * window.devicePixelRatio;
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    const pixelWidth = Math.round(width * pixelRatio);
+    const pixelHeight = Math.round(height * pixelRatio);
+    if (overlayCanvas.width !== pixelWidth || overlayCanvas.height !== pixelHeight) {
+      overlayCanvas.width = pixelWidth;
+      overlayCanvas.height = pixelHeight;
       overlayCanvas.style.width = `${width}px`;
       overlayCanvas.style.height = `${height}px`;
     }
-    
+
     const ctx = overlayCanvas.getContext('2d');
     ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-    
+
     ctx.save();
-    ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
-    
+    ctx.scale(pixelRatio, pixelRatio);
+
     const zoomVal = currentApp.state.zoom ? currentApp.state.zoom.value : 1;
     const scrollXVal = currentApp.state.scrollX || 0;
     const scrollYVal = currentApp.state.scrollY || 0;
-    
+    const viewportBounds = Core.getViewportBounds(width, height, zoomVal, scrollXVal, scrollYVal, 40);
+
     ctx.scale(zoomVal, zoomVal);
     ctx.translate(scrollXVal, scrollYVal);
-    
-    let elements = [];
-    if (currentApp.api) {
-      elements = currentApp.api.getSceneElements();
-    }
-    
-    for (const el of elements) {
-      if (shouldAnimateElement(el)) {
-        const absPoints = getPathPoints(el);
-        const geometry = getPathGeometry(absPoints);
-        
-        if (geometry.totalLength > 0) {
-          const config = getElementConfig(el.id);
-          const elOffset = getElementOffset(config, offset);
-          
-          switch (config.style) {
-            case 'particles':
-              drawParticles(ctx, el, geometry, elOffset, config);
-              break;
-            case 'dashes':
-              drawDashes(ctx, el, geometry, elOffset, config);
-              break;
-            case 'gradient':
-              drawGradientPulse(ctx, el, geometry, elOffset, config);
-              break;
-            case 'ripple':
-              drawRippleWave(ctx, el, geometry, elOffset, config);
-              break;
-            case 'train':
-              drawPacketTrain(ctx, el, geometry, elOffset, config);
-              break;
-            case 'snake':
-              drawSnakeTrail(ctx, el, geometry, elOffset, config);
-              break;
-            default:
-              drawParticles(ctx, el, geometry, elOffset, config);
-          }
+
+    const elementsMap = getSceneElementsMap();
+    for (const elementId of animatedElements.keys()) {
+      const el = elementsMap.get(elementId);
+      if (!el || !shouldAnimateElement(el) || (el.type !== 'arrow' && el.type !== 'line')) continue;
+
+      const geometry = getCachedGeometry(el);
+      if (geometry.totalLength > 0 && Core.intersectsBounds(geometry.bounds, viewportBounds)) {
+        const config = getElementConfig(el.id);
+        const elOffset = getElementOffset(config, offset);
+
+        switch (config.style) {
+          case 'particles':
+            drawParticles(ctx, el, geometry, elOffset, config);
+            break;
+          case 'dashes':
+            drawDashes(ctx, el, geometry, elOffset, config);
+            break;
+          case 'gradient':
+            drawGradientPulse(ctx, el, geometry, elOffset, config);
+            break;
+          case 'ripple':
+            drawRippleWave(ctx, el, geometry, elOffset, config);
+            break;
+          case 'train':
+            drawPacketTrain(ctx, el, geometry, elOffset, config);
+            break;
+          case 'snake':
+            drawSnakeTrail(ctx, el, geometry, elOffset, config);
+            break;
+          default:
+            drawParticles(ctx, el, geometry, elOffset, config);
         }
       }
     }
-    
+
     ctx.restore();
+  }
+
+  function reconcileRuntime() {
+    if (currentSettings.gifsEnabled && !document.hidden) {
+      for (const player of activeGifs.values()) {
+        if (player.isLoaded && !player.isPlaying) player.start();
+      }
+      scheduleGifTick();
+    } else if (!currentSettings.gifsEnabled) {
+      for (const player of activeGifs.values()) {
+        if (player.isPlaying) player.stop();
+      }
+    } else {
+      stopGifScheduler();
+    }
+
+    reconcileFlowRuntime();
+  }
+
+  function hasRenderableAnimatedElements() {
+    const elementsMap = getSceneElementsMap();
+    for (const elementId of animatedElements.keys()) {
+      const element = elementsMap.get(elementId);
+      if (element && !element.isDeleted && (element.type === 'arrow' || element.type === 'line')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function reconcileFlowRuntime() {
+    if (
+      currentSettings.flowEnabled &&
+      !document.hidden &&
+      currentApp &&
+      hasRenderableAnimatedElements()
+    ) {
+      startOverlayLoop();
+    } else {
+      stopOverlayLoop();
+    }
   }
 
   function getGlowBlur(config) {
@@ -683,13 +785,22 @@
     ctx.setLineDash([dashSize, dashSize]);
     ctx.lineDashOffset = -offset;
     
-    ctx.beginPath();
-    const firstPt = geometry.segments[0].start;
-    ctx.moveTo(firstPt.x, firstPt.y);
-    for (const seg of geometry.segments) {
-      ctx.lineTo(seg.end.x, seg.end.y);
+    if (!geometry.path && typeof Path2D !== 'undefined') {
+      geometry.path = new Path2D();
+      const firstPoint = geometry.segments[0].start;
+      geometry.path.moveTo(firstPoint.x, firstPoint.y);
+      for (const segment of geometry.segments) geometry.path.lineTo(segment.end.x, segment.end.y);
     }
-    ctx.stroke();
+
+    if (geometry.path) {
+      ctx.stroke(geometry.path);
+    } else {
+      ctx.beginPath();
+      const firstPoint = geometry.segments[0].start;
+      ctx.moveTo(firstPoint.x, firstPoint.y);
+      for (const segment of geometry.segments) ctx.lineTo(segment.end.x, segment.end.y);
+      ctx.stroke();
+    }
     
     ctx.restore();
   }
@@ -722,7 +833,7 @@
     
     while (startDist < totalLength + sweepLength) {
       // Draw a gradient segment
-      const steps = 20;
+      const steps = Math.max(8, Math.round(20 * flowFrameBudget.sampleScale));
       const stepLen = sweepLength / steps;
       
       for (let i = 0; i < steps; i++) {
@@ -872,7 +983,7 @@
     // Draw tapered, fading trail segments
     const trailLength = spacing * 1.5;
     const trailSpacing = spacing * 2.5;
-    const steps = 30;
+    const steps = Math.max(12, Math.round(30 * flowFrameBudget.sampleScale));
     const stepLen = trailLength / steps;
     
     let startDist = ((offset * 1.3) % trailSpacing + trailSpacing) % trailSpacing;
@@ -1329,7 +1440,7 @@
     
     input.addEventListener('input', (e) => {
       valSpan.textContent = e.target.value;
-      updateElementSetting(settingKey, parseInt(e.target.value, 10));
+      updateElementSetting(settingKey, parseInt(e.target.value, 10), false);
     });
     
     group.appendChild(input);
@@ -1338,19 +1449,23 @@
     return row;
   }
 
-  function updateElementSetting(key, val) {
+  function updateElementSetting(key, val, persistImmediately = true) {
     const el = getSelectedAnimatableElement();
     if (!el) return;
-    
-    let config = animatedElements.get(el.id);
-    if (!config) {
-      config = { style: 'particles' };
-      animatedElements.set(el.id, config);
+
+    const config = Core.normalizeElementConfig({
+      ...(animatedElements.get(el.id) || DEFAULT_ELEMENT_CONFIG),
+      [key]: val
+    });
+    animatedElements.set(el.id, config);
+    animatedElementsRevision++;
+    saveAnimatedElements(persistImmediately);
+    if (persistImmediately) {
+      toolbarRenderSignature = '';
+      updateToolbar(true);
+    } else {
+      toolbarRenderSignature = `${el.id}:${animatedElementsRevision}:${panelOpen}`;
     }
-    
-    config[key] = val;
-    saveAnimatedElements();
-    updateToolbar();
   }
 
   function updateToolbarPanelVisibility() {
@@ -1379,8 +1494,7 @@
     const ids = Object.keys(selectedIds).filter(id => selectedIds[id]);
     if (ids.length !== 1) return null;
 
-    const elements = currentApp.api ? currentApp.api.getSceneElements() : [];
-    const el = elements.find(e => e.id === ids[0] && !e.isDeleted);
+    const el = getSceneElementsMap().get(ids[0]);
     if (!el) return null;
 
     if (el.type !== 'arrow' && el.type !== 'line') return null;
@@ -1389,12 +1503,17 @@
     return el;
   }
 
-  function updateToolbar() {
+  function updateToolbar(force = false) {
     if (!toolbarElement) return;
 
     const el = getSelectedAnimatableElement();
+    const signature = el && currentSettings.flowEnabled
+      ? `${el.id}:${animatedElementsRevision}:${panelOpen}`
+      : `hidden:${currentSettings.flowEnabled}`;
+    if (!force && signature === toolbarRenderSignature) return;
+    toolbarRenderSignature = signature;
 
-    if (!el || !isEnabled || !currentSettings.flowEnabled) {
+    if (!el || !currentSettings.flowEnabled) {
       if (toolbarElement.classList.contains('visible')) {
         toolbarElement.classList.remove('visible');
       }
@@ -1477,25 +1596,17 @@
     } else {
       // Keep other settings if shifting style, or init defaults
       if (existing) {
-        existing.style = styleId;
+        animatedElements.set(el.id, Core.normalizeElementConfig({ ...existing, style: styleId }));
       } else {
-        animatedElements.set(el.id, {
-          style: styleId,
-          speed: DEFAULT_ELEMENT_CONFIG.speed,
-          direction: DEFAULT_ELEMENT_CONFIG.direction,
-          particleSize: DEFAULT_ELEMENT_CONFIG.particleSize,
-          particleSpacing: DEFAULT_ELEMENT_CONFIG.particleSpacing,
-          glowIntensity: DEFAULT_ELEMENT_CONFIG.glowIntensity
-        });
+        animatedElements.set(el.id, Core.normalizeElementConfig({ ...DEFAULT_ELEMENT_CONFIG, style: styleId }));
       }
     }
 
-    saveAnimatedElements();
-    updateToolbar();
-
-    if (animatedElements.size > 0 && isEnabled && currentSettings.flowEnabled) {
-      startOverlayLoop();
-    }
+    animatedElementsRevision++;
+    toolbarRenderSignature = '';
+    saveAnimatedElements(true);
+    updateToolbar(true);
+    reconcileRuntime();
   }
 
   function onRemoveClick() {
@@ -1503,9 +1614,13 @@
     if (!el) return;
 
     animatedElements.delete(el.id);
+    geometryCache.delete(el.id);
     panelOpen = false;
-    saveAnimatedElements();
-    updateToolbar();
+    animatedElementsRevision++;
+    toolbarRenderSignature = '';
+    saveAnimatedElements(true);
+    updateToolbar(true);
+    reconcileRuntime();
   }
 
   // Poll for Excalidraw instance
@@ -1513,84 +1628,91 @@
 
   // Fast poll for element selection (responsive toolbar updates)
   setInterval(() => {
-    if (currentApp) updateToolbar();
+    if (currentApp && !document.hidden) updateToolbar();
   }, 200);
 
   // Listen for Toggle Event from Content Script
   document.addEventListener('ExcaliGifToggleState', (e) => {
-    const targetEnabled = e.detail.enabled;
-    if (isEnabled === targetEnabled) return;
-    isEnabled = targetEnabled;
-    currentSettings.gifsEnabled = isEnabled;
-    
+    const targetEnabled = e.detail && e.detail.enabled;
+    if (typeof targetEnabled !== 'boolean' || currentSettings.gifsEnabled === targetEnabled) return;
+    currentSettings.gifsEnabled = targetEnabled;
+
     try {
       localStorage.setItem('excaligif_settings', JSON.stringify(currentSettings));
-    } catch (err) {}
-    
-    console.log("[ExcaliGif] Enabled state toggled to:", isEnabled);
-    
-    if (isEnabled) {
-      for (const player of activeGifs.values()) {
-        player.start();
-      }
-      if (currentSettings.flowEnabled) {
-        startOverlayLoop();
-      }
-    } else {
-      for (const player of activeGifs.values()) {
-        player.stop();
-      }
-      stopOverlayLoop();
+    } catch (error) {
+      console.error('[ExcaliGif] Error saving settings:', error);
     }
-    
-    if (currentApp) {
-      currentApp.triggerRender(true);
-    }
+
+    console.log("[ExcaliGif] GIF playback toggled to:", targetEnabled);
+    reconcileRuntime();
+    refreshGifElements(new Set(activeGifs.keys()));
   });
 
   // Listen for Update Settings Event from Content Script
   document.addEventListener('ExcaliGifUpdateSettings', (e) => {
-    const newSettings = e.detail;
-    Object.assign(currentSettings, newSettings);
-    isEnabled = currentSettings.gifsEnabled;
-    
+    const previousSettings = { ...currentSettings };
+    Object.assign(currentSettings, Core.normalizeSettings(e.detail, currentSettings));
+
     try {
       localStorage.setItem('excaligif_settings', JSON.stringify(currentSettings));
-    } catch (err) {}
-    
+    } catch (error) {
+      console.error('[ExcaliGif] Error saving settings:', error);
+    }
+
     console.log("[ExcaliGif] Settings updated:", currentSettings);
-    
-    if (isEnabled) {
-      for (const player of activeGifs.values()) {
-        player.start();
+
+    reconcileRuntime();
+    if (
+      previousSettings.gifsEnabled !== currentSettings.gifsEnabled ||
+      previousSettings.gifSpeed !== currentSettings.gifSpeed
+    ) {
+      if (currentSettings.gifsEnabled) {
+        const now = performance.now();
+        for (const player of activeGifs.values()) {
+          if (player.isPlaying) player.nextFrameAt = now;
+        }
+        scheduleGifTick();
       }
-    } else {
-      for (const player of activeGifs.values()) {
-        player.stop();
-      }
+      refreshGifElements(new Set(activeGifs.keys()));
     }
-    
-    if (isEnabled && currentSettings.flowEnabled) {
-      startOverlayLoop();
-    } else {
+
+    toolbarRenderSignature = '';
+    updateToolbar(true);
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      stopGifScheduler();
       stopOverlayLoop();
+      if (saveAnimatedElementsTimer) saveAnimatedElements(true);
+      return;
     }
-    
-    if (currentApp) {
-      currentApp.triggerRender(true);
+
+    const now = performance.now();
+    for (const player of activeGifs.values()) {
+      if (player.isPlaying) player.nextFrameAt = now;
     }
+    reconcileRuntime();
+    updateToolbar(true);
   });
 
   // Listen for Query Status Event from Content Script
   document.addEventListener('ExcaliGifQueryStatus', () => {
     const reply = {
       connected: !!currentApp,
-      enabled: isEnabled,
+      enabled: currentSettings.gifsEnabled,
       activeGifCount: activeGifs.size,
       animatedElementCount: animatedElements.size,
-      settings: currentSettings
+      settings: { ...currentSettings }
     };
     document.dispatchEvent(new CustomEvent('ExcaliGifStatusResponse', { detail: reply }));
   });
+
+  window.addEventListener('pagehide', () => {
+    if (saveAnimatedElementsTimer) saveAnimatedElements(true);
+    if (currentApp) detachCurrentApp();
+  });
+
+  checkInstance();
 })();
 

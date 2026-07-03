@@ -20,7 +20,7 @@
     },
     {
       "matches": ["https://excalidraw.com/*"],
-      "js": ["omggif.js", "inject.js"],
+      "js": ["omggif.js", "excaligif-core.js", "inject.js"],
       "run_at": "document_end",
       "world": "MAIN"
     }

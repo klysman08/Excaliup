@@ -7,9 +7,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   const gifToggle = document.getElementById('gifToggle');
   const gifCount = document.getElementById('gifCount');
   const engineStatus = document.getElementById('engineStatus');
+  const versionLabel = document.getElementById('versionLabel');
   
   const flowToggle = document.getElementById('flowToggle');
-  const flowSettingsGroup = document.getElementById('flowSettingsGroup');
+
+  versionLabel.textContent = `v${chrome.runtime.getManifest().version}`;
 
   // GIF playback controls
   const gifSpeed = document.getElementById('gifSpeed');
@@ -62,7 +64,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     gifCount.textContent = status.activeGifCount;
     document.getElementById('animatedCount').textContent = status.animatedElementCount || 0;
-    engineStatus.textContent = settings.gifsEnabled ? "Running" : "Paused";
+    engineStatus.textContent = settings.gifsEnabled || settings.flowEnabled ? "Running" : "Paused";
     
     // Broadcast setting changes
     const updateSettings = () => {
@@ -75,7 +77,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       gifSettingsGroup.style.display = currentSettings.gifsEnabled ? 'flex' : 'none';
       
       chrome.tabs.sendMessage(tab.id, { action: "updateSettings", settings: currentSettings }, (response) => {
-        engineStatus.textContent = currentSettings.gifsEnabled ? "Running" : "Paused";
+        engineStatus.textContent = currentSettings.gifsEnabled || currentSettings.flowEnabled ? "Running" : "Paused";
       });
     };
 
