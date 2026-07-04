@@ -28,6 +28,10 @@
   let toolbarRenderSignature = '';
   let animatedElementsRevision = 0;
   let saveAnimatedElementsTimer = null;
+  let animationMetadataTimer = null;
+  const pendingAnimationMetadata = new Map();
+  const pendingAnimationMetadataRemovals = new Set();
+  const ANIMATION_METADATA_KEY = 'excaligifAnimation';
 
   // Load animated elements from localStorage
   try {
@@ -63,6 +67,121 @@
     } else {
       saveAnimatedElementsTimer = setTimeout(write, 150);
     }
+  }
+
+  function animationConfigsEqual(first, second) {
+    if (!first || !second) return false;
+    const firstConfig = Core.normalizeElementConfig(first);
+    const secondConfig = Core.normalizeElementConfig(second);
+    return Object.keys(DEFAULT_ELEMENT_CONFIG).every((key) => firstConfig[key] === secondConfig[key]);
+  }
+
+  function getElementAnimationMetadata(element) {
+    const metadata = element && element.customData && element.customData[ANIMATION_METADATA_KEY];
+    return metadata && typeof metadata === 'object'
+      ? Core.normalizeElementConfig(metadata)
+      : null;
+  }
+
+  function flushAnimationMetadata() {
+    if (animationMetadataTimer) {
+      clearTimeout(animationMetadataTimer);
+      animationMetadataTimer = null;
+    }
+    if (
+      !currentApp ||
+      !currentApp.api ||
+      (pendingAnimationMetadata.size === 0 && pendingAnimationMetadataRemovals.size === 0)
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+    let changed = false;
+    const elements = currentApp.api.getSceneElements();
+    const nextElements = elements.map((element) => {
+      if (pendingAnimationMetadata.has(element.id)) {
+        const config = Core.normalizeElementConfig(pendingAnimationMetadata.get(element.id));
+        if (animationConfigsEqual(getElementAnimationMetadata(element), config)) return element;
+
+        changed = true;
+        return {
+          ...element,
+          customData: {
+            ...(element.customData || {}),
+            [ANIMATION_METADATA_KEY]: config
+          },
+          version: (element.version || 0) + 1,
+          versionNonce: Math.floor(Math.random() * 0x7fffffff),
+          updated: now
+        };
+      }
+
+      if (pendingAnimationMetadataRemovals.has(element.id) && getElementAnimationMetadata(element)) {
+        const customData = { ...(element.customData || {}) };
+        delete customData[ANIMATION_METADATA_KEY];
+        changed = true;
+        return {
+          ...element,
+          customData: Object.keys(customData).length > 0 ? customData : undefined,
+          version: (element.version || 0) + 1,
+          versionNonce: Math.floor(Math.random() * 0x7fffffff),
+          updated: now
+        };
+      }
+
+      return element;
+    });
+
+    pendingAnimationMetadata.clear();
+    pendingAnimationMetadataRemovals.clear();
+    if (changed) currentApp.api.updateScene({ elements: nextElements });
+  }
+
+  function queueAnimationMetadata(configById, removedIds = [], immediate = false) {
+    for (const [elementId, config] of configById.entries()) {
+      pendingAnimationMetadataRemovals.delete(elementId);
+      pendingAnimationMetadata.set(elementId, Core.normalizeElementConfig(config));
+    }
+    for (const elementId of removedIds) {
+      pendingAnimationMetadata.delete(elementId);
+      pendingAnimationMetadataRemovals.add(elementId);
+    }
+
+    if (animationMetadataTimer) clearTimeout(animationMetadataTimer);
+    if (immediate) {
+      flushAnimationMetadata();
+    } else {
+      animationMetadataTimer = setTimeout(flushAnimationMetadata, 150);
+    }
+  }
+
+  function syncAnimatedElementsFromScene(elements) {
+    const metadataToMigrate = new Map();
+    let changed = false;
+
+    for (const element of elements) {
+      if (!isAnimatableElement(element)) continue;
+      const metadata = getElementAnimationMetadata(element);
+      const storedConfig = animatedElements.get(element.id);
+
+      if (metadata) {
+        if (!storedConfig || !animationConfigsEqual(storedConfig, metadata)) {
+          animatedElements.set(element.id, metadata);
+          changed = true;
+        }
+      } else if (storedConfig) {
+        metadataToMigrate.set(element.id, storedConfig);
+      }
+    }
+
+    if (metadataToMigrate.size > 0) queueAnimationMetadata(metadataToMigrate, [], true);
+    if (changed) {
+      animatedElementsRevision++;
+      toolbarRenderSignature = '';
+      saveAnimatedElements(false);
+    }
+    return changed;
   }
 
   // Load settings from localStorage if available
@@ -426,6 +545,10 @@
   function detachCurrentApp() {
     stopGifScheduler();
     stopOverlayLoop();
+    if (animationMetadataTimer) clearTimeout(animationMetadataTimer);
+    animationMetadataTimer = null;
+    pendingAnimationMetadata.clear();
+    pendingAnimationMetadataRemovals.clear();
     for (const player of activeGifs.values()) player.destroy();
     activeGifs.clear();
     geometryCache.clear();
@@ -467,6 +590,8 @@
       return;
     }
 
+    syncAnimatedElementsFromScene(elements);
+
     // Clean up animated element entries for deleted elements
     const sceneIds = new Set(elements.filter(e => !e.isDeleted).map(e => e.id));
     let cleaned = false;
@@ -496,8 +621,18 @@
   }
 
   // Helper functions for path and flow animations
+  function isAnimatableElement(element) {
+    return !!(
+      element &&
+      !element.isDeleted &&
+      (element.type === 'arrow' || element.type === 'line') &&
+      Array.isArray(element.points) &&
+      element.points.length >= 2
+    );
+  }
+
   function shouldAnimateElement(el) {
-    if (el.isDeleted) return false;
+    if (!isAnimatableElement(el)) return false;
     // Only animate elements explicitly assigned via the in-canvas toolbar
     return animatedElements.has(el.id);
   }
@@ -1443,22 +1578,29 @@
   }
 
   function updateElementSetting(key, val, persistImmediately = true) {
-    const el = getSelectedAnimatableElement();
-    if (!el) return;
+    const elements = getSelectedAnimatableElements();
+    if (elements.length === 0) return;
 
-    const config = Core.normalizeElementConfig({
-      ...(animatedElements.get(el.id) || DEFAULT_ELEMENT_CONFIG),
-      [key]: val
-    });
-    animatedElements.set(el.id, config);
+    const metadata = new Map();
+    for (const element of elements) {
+      const config = Core.normalizeElementConfig({
+        ...(animatedElements.get(element.id) || DEFAULT_ELEMENT_CONFIG),
+        [key]: val
+      });
+      animatedElements.set(element.id, config);
+      metadata.set(element.id, config);
+    }
+
     animatedElementsRevision++;
     saveAnimatedElements(persistImmediately);
+    queueAnimationMetadata(metadata, [], persistImmediately);
     if (persistImmediately) {
       toolbarRenderSignature = '';
       updateToolbar(true);
     } else {
-      toolbarRenderSignature = `${el.id}:${animatedElementsRevision}:${panelOpen}`;
+      toolbarRenderSignature = `${getSelectionKey(elements)}:${animatedElementsRevision}:${panelOpen}`;
     }
+    reconcileFlowRuntime();
   }
 
   function updateToolbarPanelVisibility() {
@@ -1467,10 +1609,10 @@
     const gearBtn = document.getElementById('excaligif-gear-btn');
     if (!panel || !gearBtn) return;
     
-    const el = getSelectedAnimatableElement();
-    const config = el ? animatedElements.get(el.id) : null;
+    const elements = getSelectedAnimatableElements();
+    const allAnimated = elements.length > 0 && elements.every((element) => animatedElements.has(element.id));
     
-    if (panelOpen && config) {
+    if (panelOpen && allAnimated) {
       panel.classList.add('visible');
       gearBtn.classList.add('active');
     } else {
@@ -1479,34 +1621,47 @@
     }
   }
 
-  function getSelectedAnimatableElement() {
-    if (!currentApp || !currentApp.state) return null;
+  function getSelectedAnimatableElements() {
+    if (!currentApp || !currentApp.state) return [];
     const selectedIds = currentApp.state.selectedElementIds;
-    if (!selectedIds) return null;
+    if (!selectedIds) return [];
 
     const ids = Object.keys(selectedIds).filter(id => selectedIds[id]);
-    if (ids.length !== 1) return null;
+    if (ids.length === 0) return [];
 
-    const el = getSceneElementsMap().get(ids[0]);
-    if (!el) return null;
+    const elementsMap = getSceneElementsMap();
+    return ids
+      .map((id) => elementsMap.get(id))
+      .filter(isAnimatableElement);
+  }
 
-    if (el.type !== 'arrow' && el.type !== 'line') return null;
-    if (!el.points || el.points.length < 2) return null;
+  function getSelectionKey(elements) {
+    return elements.map((element) => element.id).sort().join(',');
+  }
 
-    return el;
+  function getCommonSetting(elements, settingKey) {
+    if (elements.length === 0) return null;
+    const configs = elements.map((element) => animatedElements.get(element.id));
+    if (configs.some((config) => !config)) return null;
+    const firstValue = Core.normalizeElementConfig(configs[0])[settingKey];
+    return configs.every((config) => Core.normalizeElementConfig(config)[settingKey] === firstValue)
+      ? firstValue
+      : null;
   }
 
   function updateToolbar(force = false) {
     if (!toolbarElement) return;
 
-    const el = getSelectedAnimatableElement();
-    const signature = el && currentSettings.flowEnabled
-      ? `${el.id}:${animatedElementsRevision}:${panelOpen}`
+    const elements = getSelectedAnimatableElements();
+    if (elements.length > 0) syncAnimatedElementsFromScene(elements);
+    const selectionKey = getSelectionKey(elements);
+    const signature = elements.length > 0 && currentSettings.flowEnabled
+      ? `${selectionKey}:${animatedElementsRevision}:${panelOpen}`
       : `hidden:${currentSettings.flowEnabled}`;
     if (!force && signature === toolbarRenderSignature) return;
     toolbarRenderSignature = signature;
 
-    if (!el || !currentSettings.flowEnabled) {
+    if (elements.length === 0 || !currentSettings.flowEnabled) {
       if (toolbarElement.classList.contains('visible')) {
         toolbarElement.classList.remove('visible');
       }
@@ -1517,14 +1672,14 @@
     }
 
     // Show toolbar
-    if (!toolbarElement.classList.contains('visible') || lastSelectedId !== el.id) {
+    if (!toolbarElement.classList.contains('visible') || lastSelectedId !== selectionKey) {
       toolbarElement.classList.add('visible');
-      lastSelectedId = el.id;
+      lastSelectedId = selectionKey;
     }
 
     // Update active state on style buttons
-    const config = animatedElements.get(el.id);
-    const activeStyle = config ? config.style : null;
+    const allAnimated = elements.every((element) => animatedElements.has(element.id));
+    const activeStyle = allAnimated ? getCommonSetting(elements, 'style') : null;
 
     const buttons = toolbarElement.querySelectorAll('.excaligif-toolbar-main .excaligif-toolbar-btn:not(.remove):not(.gear)');
     for (const btn of buttons) {
@@ -1533,34 +1688,36 @@
 
     const gearBtn = document.getElementById('excaligif-gear-btn');
     if (gearBtn) {
-      gearBtn.style.display = activeStyle ? 'inline-block' : 'none';
-      if (!activeStyle) {
+      gearBtn.style.display = allAnimated ? 'inline-block' : 'none';
+      if (!allAnimated) {
         panelOpen = false;
       }
     }
 
     // Populate Settings Panel inputs
-    if (config) {
-      const resolved = getElementConfig(el.id);
-      
+    if (allAnimated) {
+      const firstConfig = getElementConfig(elements[0].id);
+
       // Update pill button groups
-      updatePills('speed', resolved.speed);
-      updatePills('direction', resolved.direction);
-      updatePills('glowIntensity', resolved.glowIntensity);
+      updatePills('speed', getCommonSetting(elements, 'speed'));
+      updatePills('direction', getCommonSetting(elements, 'direction'));
+      updatePills('glowIntensity', getCommonSetting(elements, 'glowIntensity'));
       
       // Update Sliders
       const sizeInput = document.getElementById('excaligif-size-input');
       const sizeVal = document.getElementById('excaligif-size-val');
       if (sizeInput && sizeVal) {
-        sizeInput.value = resolved.particleSize;
-        sizeVal.textContent = resolved.particleSize;
+        const commonSize = getCommonSetting(elements, 'particleSize');
+        sizeInput.value = commonSize === null ? firstConfig.particleSize : commonSize;
+        sizeVal.textContent = commonSize === null ? 'Mixed' : commonSize;
       }
       
       const spacingInput = document.getElementById('excaligif-spacing-input');
       const spacingVal = document.getElementById('excaligif-spacing-val');
       if (spacingInput && spacingVal) {
-        spacingInput.value = resolved.particleSpacing;
-        spacingVal.textContent = resolved.particleSpacing;
+        const commonSpacing = getCommonSetting(elements, 'particleSpacing');
+        spacingInput.value = commonSpacing === null ? firstConfig.particleSpacing : commonSpacing;
+        spacingVal.textContent = commonSpacing === null ? 'Mixed' : commonSpacing;
       }
     }
     
@@ -1577,41 +1734,58 @@
   }
 
   function onStyleButtonClick(styleId) {
-    const el = getSelectedAnimatableElement();
-    if (!el) return;
+    const elements = getSelectedAnimatableElements();
+    if (elements.length === 0) return;
 
-    const existing = animatedElements.get(el.id);
+    const shouldRemove = elements.every((element) => {
+      const config = animatedElements.get(element.id);
+      return config && config.style === styleId;
+    });
+    const metadata = new Map();
+    const removedIds = [];
 
-    if (existing && existing.style === styleId) {
-      // Toggle off if clicking the same style
-      animatedElements.delete(el.id);
+    if (shouldRemove) {
+      for (const element of elements) {
+        animatedElements.delete(element.id);
+        geometryCache.delete(element.id);
+        removedIds.push(element.id);
+      }
       panelOpen = false;
     } else {
-      // Keep other settings if shifting style, or init defaults
-      if (existing) {
-        animatedElements.set(el.id, Core.normalizeElementConfig({ ...existing, style: styleId }));
-      } else {
-        animatedElements.set(el.id, Core.normalizeElementConfig({ ...DEFAULT_ELEMENT_CONFIG, style: styleId }));
+      for (const element of elements) {
+        const existing = animatedElements.get(element.id);
+        const config = Core.normalizeElementConfig({
+          ...(existing || DEFAULT_ELEMENT_CONFIG),
+          style: styleId
+        });
+        animatedElements.set(element.id, config);
+        metadata.set(element.id, config);
       }
     }
 
     animatedElementsRevision++;
     toolbarRenderSignature = '';
     saveAnimatedElements(true);
+    queueAnimationMetadata(metadata, removedIds, true);
     updateToolbar(true);
     reconcileRuntime();
   }
 
   function onRemoveClick() {
-    const el = getSelectedAnimatableElement();
-    if (!el) return;
+    const elements = getSelectedAnimatableElements();
+    if (elements.length === 0) return;
 
-    animatedElements.delete(el.id);
-    geometryCache.delete(el.id);
+    const removedIds = [];
+    for (const element of elements) {
+      animatedElements.delete(element.id);
+      geometryCache.delete(element.id);
+      removedIds.push(element.id);
+    }
     panelOpen = false;
     animatedElementsRevision++;
     toolbarRenderSignature = '';
     saveAnimatedElements(true);
+    queueAnimationMetadata(new Map(), removedIds, true);
     updateToolbar(true);
     reconcileRuntime();
   }
