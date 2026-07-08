@@ -43,3 +43,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 });
+
+// Listen for requests for icons metadata from the page context
+document.addEventListener('ExcaliGifGetIconsData', async () => {
+  try {
+    const url = chrome.runtime.getURL('icons_metadata.json');
+    const response = await fetch(url);
+    const data = await response.json();
+    const event = new CustomEvent('ExcaliGifIconsDataResponse', { detail: { success: true, data } });
+    document.dispatchEvent(event);
+  } catch (error) {
+    console.error('[ExcaliGif] Failed to load icons metadata:', error);
+    const event = new CustomEvent('ExcaliGifIconsDataResponse', { detail: { success: false, error: error.message } });
+    document.dispatchEvent(event);
+  }
+});

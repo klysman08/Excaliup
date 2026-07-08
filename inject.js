@@ -14,6 +14,18 @@
   const activeGifs = new Map(); // fileId -> GifPlayer instance
   const currentSettings = { ...Core.DEFAULT_SETTINGS };
 
+  // Material Icons Sidebar State
+  let sidebarElement = null;
+  let sidebarButton = null;
+  let isDraggingIcon = false;
+  let draggingIconData = null;
+  let iconsData = null;
+  let activeSet = 'symbols'; // 'symbols' | 'icons'
+  let activeStyle = 'outlined'; // 'outlined' | 'rounded' | 'sharp' | 'filled' | 'round' | 'two-tone'
+  let activeCategory = 'All';
+  let searchQuery = '';
+  const svgCache = new Map();
+
   let overlayAnimationFrameId = null;
   let gifSchedulerTimer = null;
   let flowOffset = 0;
@@ -553,6 +565,7 @@
     activeGifs.clear();
     geometryCache.clear();
     unhookImageCache(currentApp);
+    removeSidebarElements();
     currentApp = null;
     toolbarRenderSignature = '';
   }
@@ -565,6 +578,7 @@
     currentApp = app;
     hookImageCache(app);
     createToolbar();
+    createSidebarButtonAndPanel();
     scanAndCleanupGifs();
     updateToolbar(true);
     reconcileRuntime();
@@ -1795,7 +1809,10 @@
 
   // Fast poll for element selection (responsive toolbar updates)
   setInterval(() => {
-    if (currentApp && !document.hidden) updateToolbar();
+    if (currentApp && !document.hidden) {
+      updateToolbar();
+      updateSidebarTheme();
+    }
   }, 200);
 
   // Listen for Toggle Event from Content Script
@@ -1879,6 +1896,1121 @@
     if (saveAnimatedElementsTimer) saveAnimatedElements(true);
     if (currentApp) detachCurrentApp();
   });
+
+  // ═══════════════════════════════════════════════
+  // GOOGLE MATERIAL ICONS & SYMBOLS INTEGRATION
+  // ═══════════════════════════════════════════════
+
+  function injectMaterialFonts() {
+    if (document.getElementById('excaligif-material-fonts')) return;
+    const link = document.createElement('link');
+    link.id = 'excaligif-material-fonts';
+    link.rel = 'stylesheet';
+    link.href = 'https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&family=Material+Symbols+Sharp:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&family=Material+Icons&family=Material+Icons+Outlined&family=Material+Icons+Round&family=Material+Icons+Sharp&family=Material+Icons+Two+Tone&display=block';
+    document.head.appendChild(link);
+  }
+
+  function injectSidebarStyles() {
+    if (document.getElementById('excaligif-sidebar-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'excaligif-sidebar-styles';
+    style.textContent = `
+      /* Font Family Specificity Overrides */
+      .material-symbols-outlined { font-family: 'Material Symbols Outlined' !important; }
+      .material-symbols-rounded { font-family: 'Material Symbols Rounded' !important; }
+      .material-symbols-sharp { font-family: 'Material Symbols Sharp' !important; }
+      .material-icons { font-family: 'Material Icons' !important; }
+      .material-icons-outlined { font-family: 'Material Icons Outlined' !important; }
+      .material-icons-round { font-family: 'Material Icons Round' !important; }
+      .material-icons-sharp { font-family: 'Material Icons Sharp' !important; }
+      .material-icons-two-tone { font-family: 'Material Icons Two Tone' !important; }
+
+      /* Web Fonts Loading display */
+      .excaligif-icon-card span.icon-glyph {
+        font-size: 24px;
+        margin-bottom: 6px;
+        color: rgba(255, 255, 255, 0.85);
+        transition: transform 0.2s ease, color 0.2s ease;
+        display: inline-block;
+        line-height: 1;
+        text-transform: none;
+        letter-spacing: normal;
+        word-wrap: normal;
+        white-space: nowrap;
+        direction: ltr;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+        -moz-osx-font-smoothing: grayscale;
+        font-feature-settings: 'liga';
+      }
+
+      /* Sidebar button (Dark Mode / Default) */
+      .excaligif-icons-btn {
+        position: absolute;
+        bottom: 72px;
+        right: 20px;
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        background: #1e1e24;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        color: #fff;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15), 0 0 8px rgba(140, 90, 220, 0.08);
+        cursor: pointer;
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        outline: none;
+      }
+      .excaligif-icons-btn span {
+        font-size: 22px;
+      }
+      .excaligif-icons-btn:hover {
+        transform: translateY(-2px) scale(1.05);
+        box-shadow: 0 6px 16px rgba(140, 90, 220, 0.25), 0 0 12px rgba(140, 90, 220, 0.15);
+        border-color: rgba(140, 90, 220, 0.5);
+        color: hsl(270, 75%, 70%);
+      }
+      .excaligif-icons-btn.active {
+        background: hsl(270, 75%, 64%);
+        border-color: hsl(270, 75%, 64%);
+        color: #fff;
+        box-shadow: 0 0 16px hsla(270, 75%, 64%, 0.45);
+      }
+
+      /* Sidebar button (Light Mode Override) */
+      .excaligif-icons-btn.theme--light {
+        background: #ffffff;
+        border-color: rgba(0, 0, 0, 0.15);
+        color: #333333;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+      }
+      .excaligif-icons-btn.theme--light:hover {
+        border-color: rgba(140, 90, 220, 0.4);
+        color: hsl(270, 75%, 45%);
+        box-shadow: 0 6px 16px rgba(140, 90, 220, 0.15);
+      }
+      .excaligif-icons-btn.theme--light.active {
+        background: hsl(270, 75%, 64%);
+        border-color: hsl(270, 75%, 64%);
+        color: #fff;
+        box-shadow: 0 0 16px hsla(270, 75%, 64%, 0.3);
+      }
+
+      /* Sidebar panel (Dark Mode / Default) */
+      .excaligif-icons-sidebar {
+        position: absolute;
+        top: 0;
+        right: -330px;
+        width: 320px;
+        height: 100%;
+        background: rgba(20, 20, 28, 0.94);
+        border-left: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: -4px 0 24px rgba(0,0,0,0.45);
+        z-index: 10001;
+        display: flex;
+        flex-direction: column;
+        transition: right 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+        color: rgba(255, 255, 255, 0.9);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+      }
+      .excaligif-icons-sidebar.open {
+        right: 0;
+      }
+
+      .excaligif-icons-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 16px 20px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      .excaligif-icons-header h3 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+        letter-spacing: -0.2px;
+        background: linear-gradient(135deg, #fff 30%, hsl(270, 75%, 70%) 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+      .excaligif-icons-close {
+        background: none;
+        border: none;
+        color: rgba(255, 255, 255, 0.4);
+        font-size: 16px;
+        cursor: pointer;
+        padding: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        width: 28px;
+        height: 28px;
+        transition: all 0.15s ease;
+      }
+      .excaligif-icons-close:hover {
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.9);
+      }
+
+      .excaligif-icons-controls {
+        padding: 14px 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      }
+
+      .excaligif-icons-segmented {
+        display: flex;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 10px;
+        padding: 2px;
+      }
+      .excaligif-icons-segmented button {
+        flex: 1;
+        background: none;
+        border: none;
+        color: rgba(255, 255, 255, 0.5);
+        font-family: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 6px;
+        cursor: pointer;
+        border-radius: 8px;
+        transition: all 0.2s ease;
+        outline: none;
+      }
+      .excaligif-icons-segmented button.active {
+        background: rgba(140, 90, 220, 0.2);
+        border: 1px solid rgba(140, 90, 220, 0.35);
+        color: hsl(270, 75%, 70%);
+      }
+
+      .excaligif-icons-styles {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+      }
+      .excaligif-icons-styles button {
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        color: rgba(255, 255, 255, 0.55);
+        font-family: inherit;
+        font-size: 11px;
+        font-weight: 500;
+        padding: 4px 8px;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        outline: none;
+      }
+      .excaligif-icons-styles button:hover {
+        background: rgba(255, 255, 255, 0.07);
+        color: rgba(255, 255, 255, 0.85);
+      }
+      .excaligif-icons-styles button.active {
+        background: rgba(140, 90, 220, 0.15);
+        border-color: rgba(140, 90, 220, 0.35);
+        color: hsl(270, 75%, 70%);
+        font-weight: 600;
+      }
+
+      .excaligif-icons-search-container {
+        display: flex;
+        align-items: center;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 10px;
+        padding: 6px 12px;
+        gap: 8px;
+        transition: border-color 0.2s ease;
+      }
+      .excaligif-icons-search-container:focus-within {
+        border-color: hsla(270, 75%, 64%, 0.5);
+        box-shadow: 0 0 8px hsla(270, 75%, 64%, 0.15);
+      }
+      .excaligif-icons-search-container input {
+        flex: 1;
+        background: none;
+        border: none;
+        color: #fff;
+        font-family: inherit;
+        font-size: 13px;
+        outline: none;
+      }
+      .excaligif-icons-search-container input::placeholder {
+        color: rgba(255, 255, 255, 0.35);
+      }
+      .excaligif-icons-search-container .search-icon {
+        color: rgba(255, 255, 255, 0.3);
+        font-size: 13px;
+      }
+      .excaligif-icons-search-container button {
+        background: none;
+        border: none;
+        color: rgba(255, 255, 255, 0.3);
+        cursor: pointer;
+        font-size: 12px;
+        padding: 0;
+        display: none;
+      }
+      .excaligif-icons-search-container button.visible {
+        display: block;
+      }
+      .excaligif-icons-search-container button:hover {
+        color: #fff;
+      }
+
+      .excaligif-icons-categories-container {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .category-arrows-hint {
+        font-size: 9px;
+        color: rgba(255, 255, 255, 0.3);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        text-align: right;
+      }
+      .excaligif-icons-categories {
+        display: flex;
+        gap: 6px;
+        overflow-x: auto;
+        scrollbar-width: none;
+        padding: 2px 0;
+      }
+      .excaligif-icons-categories::-webkit-scrollbar {
+        display: none;
+      }
+      .excaligif-category-pill {
+        flex-shrink: 0;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        color: rgba(255, 255, 255, 0.5);
+        font-family: inherit;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 4px 10px;
+        border-radius: 12px;
+        cursor: pointer;
+        transition: all 0.18s ease;
+        outline: none;
+      }
+      .excaligif-category-pill:hover {
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.85);
+      }
+      .excaligif-category-pill.active {
+        background: rgba(140, 90, 220, 0.15);
+        border-color: rgba(140, 90, 220, 0.45);
+        color: hsl(270, 75%, 70%);
+      }
+
+      .excaligif-icons-grid {
+        flex: 1;
+        overflow-y: auto;
+        padding: 16px 20px;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(58px, 1fr));
+        gap: 10px;
+      }
+      .excaligif-icons-grid::-webkit-scrollbar {
+        width: 6px;
+      }
+      .excaligif-icons-grid::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .excaligif-icons-grid::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 3px;
+      }
+      .excaligif-icons-grid::-webkit-scrollbar-thumb:hover {
+        background: rgba(255, 255, 255, 0.15);
+      }
+
+      .excaligif-icon-card {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: rgba(255, 255, 255, 0.02);
+        border: 1px solid rgba(255, 255, 255, 0.04);
+        border-radius: 10px;
+        padding: 8px 4px;
+        cursor: grab;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        text-align: center;
+        position: relative;
+        overflow: hidden;
+      }
+      .excaligif-icon-card:active {
+        cursor: grabbing;
+      }
+      .excaligif-icon-card span.icon-glyph {
+        color: rgba(255, 255, 255, 0.85);
+      }
+      .excaligif-icon-card span.icon-name {
+        font-size: 9px;
+        color: rgba(255, 255, 255, 0.4);
+        width: 100%;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        padding: 0 2px;
+      }
+      .excaligif-icon-card:hover {
+        background: rgba(140, 90, 220, 0.08);
+        border-color: rgba(140, 90, 220, 0.35);
+        transform: translateY(-2px);
+      }
+      .excaligif-icon-card:hover span.icon-glyph {
+        transform: scale(1.15);
+        color: hsl(270, 75%, 70%);
+      }
+      .excaligif-icon-card:hover span.icon-name {
+        color: rgba(255, 255, 255, 0.7);
+      }
+
+      .excaligif-icons-loading, .excaligif-icons-error, .excaligif-icons-empty {
+        grid-column: 1 / -1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 60px 20px;
+        color: rgba(255, 255, 255, 0.4);
+        font-size: 13px;
+        text-align: center;
+        gap: 12px;
+      }
+      .excaligif-icons-loading .spinner {
+        width: 24px;
+        height: 24px;
+        border: 2px solid rgba(255, 255, 255, 0.1);
+        border-top-color: hsl(270, 75%, 64%);
+        border-radius: 50%;
+        animation: excaligif-spin 0.8s linear infinite;
+      }
+      @keyframes excaligif-spin {
+        to { transform: rotate(360deg); }
+      }
+
+      .excaligif-icons-footer {
+        padding: 12px 20px;
+        background: rgba(0, 0, 0, 0.15);
+        border-top: 1px solid rgba(255, 255, 255, 0.05);
+        font-size: 10px;
+        color: rgba(255, 255, 255, 0.35);
+        text-align: center;
+        font-weight: 500;
+        letter-spacing: 0.2px;
+      }
+
+      .excaligif-toast {
+        position: fixed;
+        bottom: 84px;
+        left: 50%;
+        transform: translateX(-50%) translateY(20px);
+        background: rgba(140, 90, 220, 0.95);
+        color: white;
+        padding: 8px 16px;
+        border-radius: 20px;
+        font-size: 13px;
+        font-weight: 500;
+        box-shadow: 0 4px 16px rgba(140, 90, 220, 0.4);
+        z-index: 10002;
+        opacity: 0;
+        pointer-events: none;
+        transition: all 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+      }
+      .excaligif-toast.show {
+        transform: translateX(-50%) translateY(0);
+        opacity: 1;
+      }
+
+      /* LIGHT THEME OVERRIDES (Sidebar) */
+      .excaligif-icons-sidebar.theme--light {
+        background: rgba(255, 255, 255, 0.97);
+        border-left: 1px solid rgba(0, 0, 0, 0.08);
+        box-shadow: -4px 0 24px rgba(0,0,0,0.12);
+        color: #212529;
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-header {
+        border-bottom-color: rgba(0, 0, 0, 0.06);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-header h3 {
+        background: linear-gradient(135deg, #121212 30%, hsl(270, 75%, 45%) 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-close {
+        color: rgba(0, 0, 0, 0.4);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-close:hover {
+        background: rgba(0, 0, 0, 0.05);
+        color: rgba(0, 0, 0, 0.8);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-controls {
+        border-bottom-color: rgba(0, 0, 0, 0.06);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-segmented {
+        background: rgba(0, 0, 0, 0.03);
+        border-color: rgba(0, 0, 0, 0.05);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-segmented button {
+        color: rgba(0, 0, 0, 0.45);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-segmented button.active {
+        background: #ffffff;
+        border-color: rgba(140, 90, 220, 0.25);
+        color: hsl(270, 75%, 45%);
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-styles button {
+        background: rgba(0, 0, 0, 0.02);
+        border-color: rgba(0, 0, 0, 0.04);
+        color: rgba(0, 0, 0, 0.55);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-styles button:hover {
+        background: rgba(0, 0, 0, 0.05);
+        color: rgba(0, 0, 0, 0.8);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-styles button.active {
+        background: rgba(140, 90, 220, 0.08);
+        border-color: rgba(140, 90, 220, 0.3);
+        color: hsl(270, 75%, 45%);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-search-container {
+        background: rgba(0, 0, 0, 0.02);
+        border-color: rgba(0, 0, 0, 0.06);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-search-container input {
+        color: #121212;
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-search-container input::placeholder {
+        color: rgba(0, 0, 0, 0.35);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-search-container .search-icon {
+        color: rgba(0, 0, 0, 0.3);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-search-container button {
+        color: rgba(0, 0, 0, 0.3);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-search-container button:hover {
+        color: #000;
+      }
+      .excaligif-icons-sidebar.theme--light .category-arrows-hint {
+        color: rgba(0, 0, 0, 0.35);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-category-pill {
+        background: rgba(0, 0, 0, 0.02);
+        border-color: rgba(0, 0, 0, 0.04);
+        color: rgba(0, 0, 0, 0.5);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-category-pill:hover {
+        background: rgba(0, 0, 0, 0.05);
+        color: rgba(0, 0, 0, 0.8);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-category-pill.active {
+        background: rgba(140, 90, 220, 0.08);
+        border-color: rgba(140, 90, 220, 0.35);
+        color: hsl(270, 75%, 45%);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-grid::-webkit-scrollbar-thumb {
+        background: rgba(0, 0, 0, 0.08);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-grid::-webkit-scrollbar-thumb:hover {
+        background: rgba(0, 0, 0, 0.15);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icon-card {
+        background: rgba(0, 0, 0, 0.01);
+        border-color: rgba(0, 0, 0, 0.03);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icon-card span.icon-glyph {
+        color: rgba(0, 0, 0, 0.75);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icon-card span.icon-name {
+        color: rgba(0, 0, 0, 0.45);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icon-card:hover {
+        background: rgba(140, 90, 220, 0.05);
+        border-color: rgba(140, 90, 220, 0.3);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icon-card:hover span.icon-glyph {
+        color: hsl(270, 75%, 45%);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icon-card:hover span.icon-name {
+        color: rgba(0, 0, 0, 0.8);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-loading, 
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-error, 
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-empty {
+        color: rgba(0, 0, 0, 0.45);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-loading .spinner {
+        border-color: rgba(0, 0, 0, 0.08);
+        border-top-color: hsl(270, 75%, 45%);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-footer {
+        background: rgba(0, 0, 0, 0.02);
+        border-top-color: rgba(0, 0, 0, 0.05);
+        color: rgba(0, 0, 0, 0.45);
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function removeSidebarElements() {
+    if (sidebarButton) {
+      sidebarButton.remove();
+      sidebarButton = null;
+    }
+    if (sidebarElement) {
+      sidebarElement.remove();
+      sidebarElement = null;
+    }
+    const styles = document.getElementById('excaligif-sidebar-styles');
+    if (styles) styles.remove();
+    const fonts = document.getElementById('excaligif-material-fonts');
+    if (fonts) fonts.remove();
+    
+    // Remove drop listeners
+    const canvas = document.querySelector('.excalidraw__canvas.interactive');
+    if (canvas) {
+      canvas.removeEventListener('dragover', onCanvasDragOver);
+      canvas.removeEventListener('drop', onCanvasDrop);
+    }
+    
+    document.removeEventListener('keydown', onKeyDown);
+  }
+
+  function createSidebarButtonAndPanel() {
+    const excalidraw = document.querySelector('.excalidraw');
+    if (!excalidraw) return;
+
+    // Avoid duplicate initialization
+    if (document.getElementById('excaligif-icons-sidebar')) return;
+
+    injectMaterialFonts();
+    injectSidebarStyles();
+
+    // 1. Create Floating Toggle Button
+    sidebarButton = document.createElement('button');
+    sidebarButton.id = 'excaligif-icons-btn';
+    sidebarButton.className = 'excaligif-icons-btn';
+    sidebarButton.setAttribute('title', 'Google Material Icons & Symbols');
+    sidebarButton.innerHTML = '<span class="material-symbols-outlined">grid_view</span>';
+    excalidraw.appendChild(sidebarButton);
+
+    // 2. Create Sidebar Element
+    sidebarElement = document.createElement('div');
+    sidebarElement.id = 'excaligif-icons-sidebar';
+    sidebarElement.className = 'excaligif-icons-sidebar';
+    sidebarElement.innerHTML = `
+      <div class="excaligif-icons-header">
+        <h3>Material Icons</h3>
+        <button class="excaligif-icons-close" id="excaligif-icons-close">✕</button>
+      </div>
+      
+      <div class="excaligif-icons-controls">
+        <div class="excaligif-icons-segmented">
+          <button class="active" id="btn-set-symbols">Symbols</button>
+          <button id="btn-set-icons">Icons</button>
+        </div>
+        
+        <div class="excaligif-icons-styles" id="excaligif-icons-styles"></div>
+        
+        <div class="excaligif-icons-search-container">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="excaligif-icons-search" placeholder="Search 4,000+ icons...">
+          <button id="excaligif-icons-search-clear">✕</button>
+        </div>
+        
+        <div class="excaligif-icons-categories-container">
+          <div class="category-arrows-hint">Arrows (← →) navigate categories</div>
+          <div class="excaligif-icons-categories" id="excaligif-icons-categories"></div>
+        </div>
+      </div>
+      
+      <div class="excaligif-icons-grid" id="excaligif-icons-grid">
+        <div class="excaligif-icons-loading">
+          <div class="spinner"></div>
+          <span>Loading library...</span>
+        </div>
+      </div>
+      
+      <div class="excaligif-icons-footer" id="excaligif-icons-footer">
+        Click to copy & paste, or drag to canvas
+      </div>
+    `;
+    excalidraw.appendChild(sidebarElement);
+
+    // Set up canvas drop interception
+    setupCanvasDropIntercept();
+
+    // 3. Register Event Listeners
+    sidebarButton.addEventListener('click', () => {
+      toggleSidebar();
+    });
+
+    const closeBtn = sidebarElement.querySelector('#excaligif-icons-close');
+    closeBtn.addEventListener('click', () => {
+      closeSidebar();
+    });
+
+    const setSymbolsBtn = sidebarElement.querySelector('#btn-set-symbols');
+    const setIconsBtn = sidebarElement.querySelector('#btn-set-icons');
+
+    setSymbolsBtn.addEventListener('click', () => {
+      if (activeSet === 'symbols') return;
+      activeSet = 'symbols';
+      setSymbolsBtn.classList.add('active');
+      setIconsBtn.classList.remove('active');
+      activeStyle = 'outlined'; 
+      updateStyleSelector();
+      renderIconsGrid();
+    });
+
+    setIconsBtn.addEventListener('click', () => {
+      if (activeSet === 'icons') return;
+      activeSet = 'icons';
+      setIconsBtn.classList.add('active');
+      setSymbolsBtn.classList.remove('active');
+      activeStyle = 'filled'; 
+      updateStyleSelector();
+      renderIconsGrid();
+    });
+
+    const searchInput = sidebarElement.querySelector('#excaligif-icons-search');
+    const searchClear = sidebarElement.querySelector('#excaligif-icons-search-clear');
+
+    searchInput.addEventListener('input', (e) => {
+      searchQuery = e.target.value.toLowerCase();
+      if (searchQuery) {
+        searchClear.classList.add('visible');
+      } else {
+        searchClear.classList.remove('visible');
+      }
+      renderIconsGrid();
+    });
+
+    searchClear.addEventListener('click', () => {
+      searchInput.value = '';
+      searchQuery = '';
+      searchClear.classList.remove('visible');
+      renderIconsGrid();
+      searchInput.focus();
+    });
+
+    // Arrow navigation & general keyboard handling
+    document.addEventListener('keydown', onKeyDown);
+
+    // Initial styles population
+    updateStyleSelector();
+    updateSidebarTheme();
+  }
+
+  function onKeyDown(e) {
+    if (!sidebarElement || !sidebarElement.classList.contains('open')) return;
+    if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      cycleCategory(-1);
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      cycleCategory(1);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeSidebar();
+    }
+  }
+
+  function updateStyleSelector() {
+    const container = document.getElementById('excaligif-icons-styles');
+    if (!container) return;
+
+    container.innerHTML = '';
+    let styles = [];
+    if (activeSet === 'symbols') {
+      styles = [
+        { id: 'outlined', label: 'Outlined' },
+        { id: 'rounded', label: 'Rounded' },
+        { id: 'sharp', label: 'Sharp' }
+      ];
+    } else {
+      styles = [
+        { id: 'filled', label: 'Filled' },
+        { id: 'outlined', label: 'Outlined' },
+        { id: 'round', label: 'Rounded' },
+        { id: 'sharp', label: 'Sharp' },
+        { id: 'two-tone', label: 'Two Tone' }
+      ];
+    }
+
+    styles.forEach((sty) => {
+      const btn = document.createElement('button');
+      btn.textContent = sty.label;
+      if (sty.id === activeStyle) {
+        btn.className = 'active';
+      }
+      btn.addEventListener('click', () => {
+        if (activeStyle === sty.id) return;
+        activeStyle = sty.id;
+        container.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderIconsGrid();
+      });
+      container.appendChild(btn);
+    });
+  }
+
+  function cycleCategory(dir) {
+    if (!iconsData || !iconsData.categories) return;
+    const cats = ['All', ...iconsData.categories];
+    const curIdx = cats.indexOf(activeCategory);
+    let nextIdx = curIdx + dir;
+    if (nextIdx < 0) nextIdx = cats.length - 1;
+    if (nextIdx >= cats.length) nextIdx = 0;
+    
+    selectCategory(cats[nextIdx]);
+  }
+
+  function selectCategory(catName) {
+    activeCategory = catName;
+    const container = document.getElementById('excaligif-icons-categories');
+    if (!container) return;
+
+    container.querySelectorAll('.excaligif-category-pill').forEach((pill) => {
+      if (pill.dataset.cat === catName) {
+        pill.classList.add('active');
+        pill.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      } else {
+        pill.classList.remove('active');
+      }
+    });
+
+    renderIconsGrid();
+  }
+
+  function renderCategories() {
+    const container = document.getElementById('excaligif-icons-categories');
+    if (!container || !iconsData) return;
+
+    container.innerHTML = '';
+    const cats = ['All', ...iconsData.categories];
+    cats.forEach((cat) => {
+      const pill = document.createElement('button');
+      pill.className = 'excaligif-category-pill' + (cat === activeCategory ? ' active' : '');
+      pill.textContent = cat;
+      pill.dataset.cat = cat;
+      pill.addEventListener('click', () => {
+        selectCategory(cat);
+      });
+      container.appendChild(pill);
+    });
+  }
+
+  function renderIconsGrid() {
+    const grid = document.getElementById('excaligif-icons-grid');
+    if (!grid || !iconsData) return;
+
+    grid.innerHTML = '';
+    
+    const filtered = iconsData.icons.filter((icon) => {
+      if (activeSet === 'symbols' && !icon.s) return false;
+      if (activeSet === 'icons' && !icon.i) return false;
+      if (activeCategory !== 'All' && icon.c !== activeCategory) return false;
+
+      if (searchQuery) {
+        const matchesName = icon.n.includes(searchQuery);
+        const matchesTags = icon.t.some(t => t.toLowerCase().includes(searchQuery));
+        if (!matchesName && !matchesTags) return false;
+      }
+
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      grid.innerHTML = '<div class="excaligif-icons-empty">No matching icons found.</div>';
+      return;
+    }
+
+    const maxRender = 250;
+    const itemsToRender = filtered.slice(0, maxRender);
+
+    itemsToRender.forEach((icon) => {
+      const card = document.createElement('div');
+      card.className = 'excaligif-icon-card';
+      card.setAttribute('draggable', 'true');
+      card.setAttribute('title', `${icon.n} (${icon.c})\nClick to copy & paste\nDrag to canvas`);
+      
+      let glyphClass = '';
+      if (activeSet === 'symbols') {
+        glyphClass = `material-symbols-${activeStyle}`;
+      } else {
+        if (activeStyle === 'filled') {
+          glyphClass = 'material-icons';
+        } else {
+          glyphClass = `material-icons-${activeStyle}`;
+        }
+      }
+
+      card.innerHTML = `
+        <span class="icon-glyph ${glyphClass}">${icon.n}</span>
+        <span class="icon-name">${icon.n.replace(/_/g, ' ')}</span>
+      `;
+
+      card.addEventListener('mouseenter', () => {
+        getSvgContent(icon.n, activeSet, activeStyle);
+      });
+
+      card.addEventListener('dragstart', (e) => {
+        isDraggingIcon = true;
+        draggingIconData = { name: icon.n, set: activeSet, style: activeStyle };
+        e.dataTransfer.effectAllowed = 'copy';
+        e.dataTransfer.setData('text/plain', icon.n);
+        card.style.opacity = '0.5';
+      });
+
+      card.addEventListener('dragend', () => {
+        isDraggingIcon = false;
+        draggingIconData = null;
+        card.style.opacity = '1';
+      });
+
+      card.addEventListener('click', async () => {
+        const originalContent = card.innerHTML;
+        card.innerHTML = '<div class="spinner-small" style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.2);border-top-color:currentColor;border-radius:50%;animation:excaligif-spin 0.6s linear infinite;margin-bottom:6px;"></div><span class="icon-name">Fetching...</span>';
+        
+        try {
+          const svgContent = await getSvgContent(icon.n, activeSet, activeStyle);
+          if (svgContent) {
+            await navigator.clipboard.writeText(svgContent);
+            showToast(`"${icon.n}" copied!`);
+
+            const clipboardData = new DataTransfer();
+            clipboardData.setData('text/plain', svgContent);
+            const pasteEvent = new ClipboardEvent('paste', {
+              clipboardData,
+              bubbles: true,
+              cancelable: true
+            });
+            document.activeElement.dispatchEvent(pasteEvent);
+          } else {
+            showToast("Failed to fetch SVG");
+          }
+        } catch (err) {
+          console.error("[ExcaliGif] Copy failed:", err);
+          showToast("Copy failed");
+        } finally {
+          card.innerHTML = originalContent;
+        }
+      });
+
+      grid.appendChild(card);
+    });
+
+    const footer = document.getElementById('excaligif-icons-footer');
+    if (footer) {
+      if (filtered.length > maxRender) {
+        footer.textContent = `Showing ${maxRender} of ${filtered.length} icons. Refine search.`;
+      } else {
+        footer.textContent = `Found ${filtered.length} icon${filtered.length === 1 ? '' : 's'}. Click or drag.`;
+      }
+    }
+  }
+
+  function updateSidebarTheme() {
+    if (!currentApp || !sidebarElement) return;
+    const theme = currentApp.state.theme || 'light';
+    if (theme === 'dark') {
+      sidebarElement.classList.remove('theme--light');
+      sidebarElement.classList.add('theme--dark');
+      if (sidebarButton) {
+        sidebarButton.classList.remove('theme--light');
+        sidebarButton.classList.add('theme--dark');
+      }
+    } else {
+      sidebarElement.classList.remove('theme--dark');
+      sidebarElement.classList.add('theme--light');
+      if (sidebarButton) {
+        sidebarButton.classList.remove('theme--dark');
+        sidebarButton.classList.add('theme--light');
+      }
+    }
+  }
+
+  function toggleSidebar() {
+    if (!sidebarElement) return;
+    const isOpen = sidebarElement.classList.contains('open');
+    if (isOpen) {
+      closeSidebar();
+    } else {
+      openSidebar();
+    }
+  }
+
+  function openSidebar() {
+    if (!sidebarElement || !sidebarButton) return;
+    sidebarElement.classList.add('open');
+    sidebarButton.classList.add('active');
+    if (!iconsData) {
+      loadIconsData();
+    } else {
+      renderIconsGrid();
+    }
+  }
+
+  function closeSidebar() {
+    if (!sidebarElement || !sidebarButton) return;
+    sidebarElement.classList.remove('open');
+    sidebarButton.classList.remove('active');
+  }
+
+  function loadIconsData() {
+    if (iconsData) return;
+    const grid = document.getElementById('excaligif-icons-grid');
+    if (grid) {
+      grid.innerHTML = '<div class="excaligif-icons-loading"><div class="spinner"></div><span>Loading library...</span></div>';
+    }
+
+    const onResponse = (e) => {
+      document.removeEventListener('ExcaliGifIconsDataResponse', onResponse);
+      if (e.detail && e.detail.success) {
+        iconsData = e.detail.data;
+        renderCategories();
+        renderIconsGrid();
+      } else {
+        if (grid) {
+          grid.innerHTML = '<div class="excaligif-icons-error">Failed to load icons database.</div>';
+        }
+      }
+    };
+    document.addEventListener('ExcaliGifIconsDataResponse', onResponse);
+    document.dispatchEvent(new CustomEvent('ExcaliGifGetIconsData'));
+  }
+
+  function setupCanvasDropIntercept() {
+    const canvas = document.querySelector('.excalidraw__canvas.interactive');
+    if (!canvas) return;
+    
+    canvas.removeEventListener('dragover', onCanvasDragOver);
+    canvas.removeEventListener('drop', onCanvasDrop);
+    
+    canvas.addEventListener('dragover', onCanvasDragOver);
+    canvas.addEventListener('drop', onCanvasDrop);
+  }
+
+  function onCanvasDragOver(e) {
+    if (isDraggingIcon) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    }
+  }
+
+  async function onCanvasDrop(e) {
+    if (!isDraggingIcon || !draggingIconData) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const { name, set, style } = draggingIconData;
+    isDraggingIcon = false;
+    draggingIconData = null;
+
+    const canvas = document.querySelector('.excalidraw__canvas.interactive');
+    if (!canvas) return;
+
+    const clientX = e.clientX;
+    const clientY = e.clientY;
+
+    try {
+      showToast("Fetching SVG...");
+      const svgContent = await getSvgContent(name, set, style);
+      if (!svgContent) {
+        showToast("Failed to fetch SVG");
+        return;
+      }
+
+      const file = new File([svgContent], `${name}.svg`, { type: 'image/svg+xml' });
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(file);
+
+      const dropEvent = new DragEvent('drop', {
+        dataTransfer,
+        bubbles: true,
+        cancelable: true,
+        clientX,
+        clientY
+      });
+
+      canvas.dispatchEvent(dropEvent);
+      showToast("Icon dropped!");
+    } catch (err) {
+      console.error("[ExcaliGif] Drop failed:", err);
+      showToast("Drop failed");
+    }
+  }
+
+  async function getSvgContent(name, set, style) {
+    const cacheKey = `${set}_${style}_${name}`;
+    if (svgCache.has(cacheKey)) {
+      return svgCache.get(cacheKey);
+    }
+
+    let url;
+    if (set === 'symbols') {
+      url = `https://cdn.jsdelivr.net/npm/@material-symbols/svg-400@latest/${style}/${name}.svg`;
+    } else {
+      url = `https://cdn.jsdelivr.net/npm/@material-design-icons/svg@latest/${style}/${name}.svg`;
+    }
+
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      let text = await response.text();
+      text = cleanSvg(text);
+      svgCache.set(cacheKey, text);
+      return text;
+    } catch (e) {
+      console.error(`[ExcaliGif] SVG fetch failed for ${name}:`, e);
+      return null;
+    }
+  }
+
+  function cleanSvg(svgText) {
+    svgText = svgText.replace(/<\?xml.*?\?>/gi, '');
+    svgText = svgText.replace(/<!DOCTYPE.*?>/gi, '');
+    return svgText
+      .replace(/fill="#(000000|000|212121)"/gi, 'fill="currentColor"')
+      .replace(/stroke="#(000000|000|212121)"/gi, 'stroke="currentColor"');
+  }
+
+  function showToast(message) {
+    let toast = document.getElementById('excaligif-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'excaligif-toast';
+      toast.className = 'excaligif-toast';
+      document.body.appendChild(toast);
+    }
+    toast.textContent = message;
+    toast.classList.add('show');
+    if (toast.timer) clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => {
+      toast.classList.remove('show');
+    }, 2000);
+  }
 
   checkInstance();
 })();
