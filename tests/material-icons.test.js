@@ -68,3 +68,68 @@ test('content.js listens for ExcaliGifGetIconsData and responds via custom event
   assert.equal(responseEvent.detail.success, true);
   assert.deepEqual(responseEvent.detail.data, mockMetadata);
 });
+
+test('content.js listens for ExcaliGifGetLucideData and responds via custom event', async () => {
+  const listeners = new Map();
+  const dispatchedEvents = [];
+  
+  // Mock content.js environment
+  const chrome = {
+    runtime: {
+      onMessage: {
+        addListener() {}
+      },
+      getURL(file) {
+        return `mock-extension-url://${file}`;
+      }
+    }
+  };
+
+  const document = {
+    addEventListener(name, handler) {
+      listeners.set(name, handler);
+    },
+    dispatchEvent(event) {
+      dispatchedEvents.push(event);
+      return true;
+    }
+  };
+
+  // Mock global fetch
+  const mockMetadata = { icons: [{ n: 'activity', t: ['pulse'] }] };
+  const globalFetch = async (url) => {
+    assert.equal(url, 'mock-extension-url://lucide_metadata.json');
+    return {
+      json: async () => mockMetadata
+    };
+  };
+
+  const context = {
+    chrome,
+    document,
+    fetch: globalFetch,
+    console: { log() {}, error() {} },
+    CustomEvent: class CustomEvent {
+      constructor(type, options = {}) {
+        this.type = type;
+        this.detail = options.detail;
+      }
+    }
+  };
+
+  const source = fs.readFileSync(path.join(__dirname, '..', 'content.js'), 'utf8');
+  vm.runInNewContext(source, context, { filename: 'content.js' });
+
+  // Verify listeners were registered
+  assert.ok(listeners.has('ExcaliGifGetLucideData'));
+
+  // Trigger the event listener
+  const handler = listeners.get('ExcaliGifGetLucideData');
+  await handler();
+
+  // Verify event response was dispatched
+  const responseEvent = dispatchedEvents.find(e => e.type === 'ExcaliGifLucideDataResponse');
+  assert.ok(responseEvent);
+  assert.equal(responseEvent.detail.success, true);
+  assert.deepEqual(responseEvent.detail.data, mockMetadata);
+});

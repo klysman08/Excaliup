@@ -37,7 +37,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["icons_metadata.json"],
+      "resources": ["icons_metadata.json", "lucide_metadata.json"],
       "matches": ["https://excalidraw.com/*"]
     }
   ]

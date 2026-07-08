@@ -20,7 +20,8 @@
   let isDraggingIcon = false;
   let draggingIconData = null;
   let iconsData = null;
-  let activeSet = 'symbols'; // 'symbols' | 'icons'
+  let lucideData = null;
+  let activeSet = 'symbols'; // 'symbols' | 'icons' | 'lucide'
   let activeStyle = 'outlined'; // 'outlined' | 'rounded' | 'sharp' | 'filled' | 'round' | 'two-tone'
   let activeCategory = 'All';
   let searchQuery = '';
@@ -1919,6 +1920,15 @@
     document.head.appendChild(link);
   }
 
+  function injectLucideFonts() {
+    if (document.getElementById('excaligif-lucide-fonts')) return;
+    const link = document.createElement('link');
+    link.id = 'excaligif-lucide-fonts';
+    link.rel = 'stylesheet';
+    link.href = 'https://cdn.jsdelivr.net/npm/lucide-static@0.473.0/font/lucide.css';
+    document.head.appendChild(link);
+  }
+
   function injectSidebarStyles() {
     if (document.getElementById('excaligif-sidebar-styles')) return;
     const style = document.createElement('style');
@@ -2556,6 +2566,8 @@
     if (styles) styles.remove();
     const fonts = document.getElementById('excaligif-material-fonts');
     if (fonts) fonts.remove();
+    const lucideFonts = document.getElementById('excaligif-lucide-fonts');
+    if (lucideFonts) lucideFonts.remove();
     
     // Remove drop listeners
     const canvas = document.querySelector('.excalidraw__canvas.interactive');
@@ -2581,7 +2593,7 @@
     sidebarButton = document.createElement('button');
     sidebarButton.id = 'excaligif-icons-btn';
     sidebarButton.className = 'excaligif-icons-btn';
-    sidebarButton.setAttribute('title', 'Google Material Icons & Symbols');
+    sidebarButton.setAttribute('title', 'Icons & Symbols Library');
     sidebarButton.innerHTML = '<span class="material-symbols-outlined">grid_view</span>';
     excalidraw.appendChild(sidebarButton);
 
@@ -2591,7 +2603,7 @@
     sidebarElement.className = 'excaligif-icons-sidebar';
     sidebarElement.innerHTML = `
       <div class="excaligif-icons-header">
-        <h3>Material Icons</h3>
+        <h3>Icon Library</h3>
         <button class="excaligif-icons-close" id="excaligif-icons-close">✕</button>
       </div>
       
@@ -2599,6 +2611,7 @@
         <div class="excaligif-icons-segmented">
           <button class="active" id="btn-set-symbols">Symbols</button>
           <button id="btn-set-icons">Icons</button>
+          <button id="btn-set-lucide">Lucide</button>
         </div>
         
         <div class="excaligif-icons-styles" id="excaligif-icons-styles"></div>
@@ -2645,6 +2658,7 @@
 
     const setSymbolsBtn = sidebarElement.querySelector('#btn-set-symbols');
     const setIconsBtn = sidebarElement.querySelector('#btn-set-icons');
+    const setLucideBtn = sidebarElement.querySelector('#btn-set-lucide');
 
     setSymbolsBtn.addEventListener('click', () => {
       if (activeSet === 'symbols') return;
@@ -2652,6 +2666,7 @@
       currentPage = 1;
       setSymbolsBtn.classList.add('active');
       setIconsBtn.classList.remove('active');
+      setLucideBtn.classList.remove('active');
       activeStyle = 'outlined'; 
       updateStyleSelector();
       renderIconsGrid();
@@ -2663,7 +2678,21 @@
       currentPage = 1;
       setIconsBtn.classList.add('active');
       setSymbolsBtn.classList.remove('active');
+      setLucideBtn.classList.remove('active');
       activeStyle = 'filled'; 
+      updateStyleSelector();
+      renderIconsGrid();
+    });
+
+    setLucideBtn.addEventListener('click', () => {
+      if (activeSet === 'lucide') return;
+      activeSet = 'lucide';
+      currentPage = 1;
+      setLucideBtn.classList.add('active');
+      setSymbolsBtn.classList.remove('active');
+      setIconsBtn.classList.remove('active');
+      activeStyle = ''; 
+      injectLucideFonts();
       updateStyleSelector();
       renderIconsGrid();
     });
@@ -2727,7 +2756,7 @@
         { id: 'rounded', label: 'Rounded' },
         { id: 'sharp', label: 'Sharp' }
       ];
-    } else {
+    } else if (activeSet === 'icons') {
       styles = [
         { id: 'filled', label: 'Filled' },
         { id: 'outlined', label: 'Outlined' },
@@ -2804,14 +2833,25 @@
 
   function renderIconsGrid() {
     const grid = document.getElementById('excaligif-icons-grid');
-    if (!grid || !iconsData) return;
+    if (!grid) return;
+
+    const catContainer = document.querySelector('.excaligif-icons-categories-container');
+    if (catContainer) {
+      catContainer.style.display = activeSet === 'lucide' ? 'none' : 'flex';
+    }
+
+    const currentData = activeSet === 'lucide' ? lucideData : iconsData;
+    if (!currentData) {
+      loadIconsData();
+      return;
+    }
 
     grid.innerHTML = '';
     
-    const filtered = iconsData.icons.filter((icon) => {
+    const filtered = currentData.icons.filter((icon) => {
       if (activeSet === 'symbols' && !icon.s) return false;
       if (activeSet === 'icons' && !icon.i) return false;
-      if (activeCategory !== 'All' && icon.c !== activeCategory) return false;
+      if (activeSet !== 'lucide' && activeCategory !== 'All' && icon.c !== activeCategory) return false;
 
       if (searchQuery) {
         const matchesName = icon.n.includes(searchQuery);
@@ -2841,23 +2881,33 @@
       const card = document.createElement('div');
       card.className = 'excaligif-icon-card';
       card.setAttribute('draggable', 'true');
-      card.setAttribute('title', `${icon.n} (${icon.c})\nClick to copy & paste\nDrag to canvas`);
+      card.setAttribute('title', activeSet === 'lucide'
+        ? `${icon.n}\nClick to copy & paste\nDrag to canvas`
+        : `${icon.n} (${icon.c})\nClick to copy & paste\nDrag to canvas`
+      );
       
-      let glyphClass = '';
-      if (activeSet === 'symbols') {
-        glyphClass = `material-symbols-${activeStyle}`;
+      if (activeSet === 'lucide') {
+        card.innerHTML = `
+          <span class="icon-glyph icon-${icon.n}"></span>
+          <span class="icon-name">${icon.n.replace(/-/g, ' ')}</span>
+        `;
       } else {
-        if (activeStyle === 'filled') {
-          glyphClass = 'material-icons';
+        let glyphClass = '';
+        if (activeSet === 'symbols') {
+          glyphClass = `material-symbols-${activeStyle}`;
         } else {
-          glyphClass = `material-icons-${activeStyle}`;
+          if (activeStyle === 'filled') {
+            glyphClass = 'material-icons';
+          } else {
+            glyphClass = `material-icons-${activeStyle}`;
+          }
         }
-      }
 
-      card.innerHTML = `
-        <span class="icon-glyph ${glyphClass}">${icon.n}</span>
-        <span class="icon-name">${icon.n.replace(/_/g, ' ')}</span>
-      `;
+        card.innerHTML = `
+          <span class="icon-glyph ${glyphClass}">${icon.n}</span>
+          <span class="icon-name">${icon.n.replace(/_/g, ' ')}</span>
+        `;
+      }
 
       card.addEventListener('mouseenter', () => {
         getSvgContent(icon.n, activeSet, activeStyle);
@@ -3009,26 +3059,47 @@
   }
 
   function loadIconsData() {
-    if (iconsData) return;
     const grid = document.getElementById('excaligif-icons-grid');
-    if (grid) {
-      grid.innerHTML = '<div class="excaligif-icons-loading"><div class="spinner"></div><span>Loading library...</span></div>';
-    }
-
-    const onResponse = (e) => {
-      document.removeEventListener('ExcaliGifIconsDataResponse', onResponse);
-      if (e.detail && e.detail.success) {
-        iconsData = e.detail.data;
-        renderCategories();
-        renderIconsGrid();
-      } else {
-        if (grid) {
-          grid.innerHTML = '<div class="excaligif-icons-error">Failed to load icons database.</div>';
-        }
+    if (activeSet === 'lucide') {
+      if (lucideData) return;
+      if (grid) {
+        grid.innerHTML = '<div class="excaligif-icons-loading"><div class="spinner"></div><span>Loading Lucide library...</span></div>';
       }
-    };
-    document.addEventListener('ExcaliGifIconsDataResponse', onResponse);
-    document.dispatchEvent(new CustomEvent('ExcaliGifGetIconsData'));
+
+      const onResponse = (e) => {
+        document.removeEventListener('ExcaliGifLucideDataResponse', onResponse);
+        if (e.detail && e.detail.success) {
+          lucideData = e.detail.data;
+          renderIconsGrid();
+        } else {
+          if (grid) {
+            grid.innerHTML = '<div class="excaligif-icons-error">Failed to load Lucide database.</div>';
+          }
+        }
+      };
+      document.addEventListener('ExcaliGifLucideDataResponse', onResponse);
+      document.dispatchEvent(new CustomEvent('ExcaliGifGetLucideData'));
+    } else {
+      if (iconsData) return;
+      if (grid) {
+        grid.innerHTML = '<div class="excaligif-icons-loading"><div class="spinner"></div><span>Loading library...</span></div>';
+      }
+
+      const onResponse = (e) => {
+        document.removeEventListener('ExcaliGifIconsDataResponse', onResponse);
+        if (e.detail && e.detail.success) {
+          iconsData = e.detail.data;
+          renderCategories();
+          renderIconsGrid();
+        } else {
+          if (grid) {
+            grid.innerHTML = '<div class="excaligif-icons-error">Failed to load icons database.</div>';
+          }
+        }
+      };
+      document.addEventListener('ExcaliGifIconsDataResponse', onResponse);
+      document.dispatchEvent(new CustomEvent('ExcaliGifGetIconsData'));
+    }
   }
 
   function setupCanvasDropIntercept() {
@@ -3101,8 +3172,10 @@
     let url;
     if (set === 'symbols') {
       url = `https://cdn.jsdelivr.net/npm/@material-symbols/svg-400@latest/${style}/${name}.svg`;
-    } else {
+    } else if (set === 'icons') {
       url = `https://cdn.jsdelivr.net/npm/@material-design-icons/svg@latest/${style}/${name}.svg`;
+    } else if (set === 'lucide') {
+      url = `https://cdn.jsdelivr.net/npm/lucide-static@0.473.0/icons/${name}.svg`;
     }
 
     try {

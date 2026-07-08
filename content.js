@@ -58,3 +58,18 @@ document.addEventListener('ExcaliGifGetIconsData', async () => {
     document.dispatchEvent(event);
   }
 });
+
+// Listen for requests for Lucide icons metadata from the page context
+document.addEventListener('ExcaliGifGetLucideData', async () => {
+  try {
+    const url = chrome.runtime.getURL('lucide_metadata.json');
+    const response = await fetch(url);
+    const data = await response.json();
+    const event = new CustomEvent('ExcaliGifLucideDataResponse', { detail: { success: true, data } });
+    document.dispatchEvent(event);
+  } catch (error) {
+    console.error('[Excali Up] Failed to load Lucide metadata:', error);
+    const event = new CustomEvent('ExcaliGifLucideDataResponse', { detail: { success: false, error: error.message } });
+    document.dispatchEvent(event);
+  }
+});
