@@ -14,7 +14,10 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function() {
   'use strict';
 
-  const FLOW_STYLES = new Set(['particles', 'dashes', 'gradient', 'ripple', 'train', 'snake']);
+  const FLOW_STYLES = new Set([
+    'particles', 'dashes', 'gradient', 'ripple', 'train', 'snake',
+    'comet', 'electricity', 'wave', 'dual'
+  ]);
   const FLOW_SPEEDS = new Set(['slow', 'medium', 'fast']);
   const FLOW_DIRECTIONS = new Set(['forward', 'reverse', 'bounce']);
   const GLOW_INTENSITIES = new Set(['none', 'subtle', 'medium', 'strong']);
@@ -105,9 +108,13 @@
     const cos = angle ? Math.cos(angle) : 1;
     const sin = angle ? Math.sin(angle) : 0;
 
-    return element.points.map((point) => {
-      const x = originX + point[0];
-      const y = originY + point[1];
+    const sourcePoints = element.roundness
+      ? getRoundedLinearElementPoints(element.points)
+      : element.points.map((point) => ({ x: point[0], y: point[1] }));
+
+    return sourcePoints.map((point) => {
+      const x = originX + point.x;
+      const y = originY + point.y;
       if (!angle) return { x, y };
 
       const relativeX = x - centerX;
@@ -117,6 +124,46 @@
         y: centerY + relativeX * sin + relativeY * cos
       };
     });
+  }
+
+  // Excalidraw renders rounded linear elements as a curve through their points.
+  // Flatten that curve once so every overlay effect shares the same arc-length
+  // geometry instead of following the straight control polygon.
+  function getRoundedLinearElementPoints(points) {
+    if (!Array.isArray(points) || points.length < 3) {
+      return (points || []).map((point) => ({ x: point[0], y: point[1] }));
+    }
+
+    const result = [{ x: points[0][0], y: points[0][1] }];
+    for (let index = 0; index < points.length - 1; index++) {
+      const p0 = points[Math.max(0, index - 1)];
+      const p1 = points[index];
+      const p2 = points[index + 1];
+      const p3 = points[Math.min(points.length - 1, index + 2)];
+      const chordLength = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+      const steps = Math.max(8, Math.min(48, Math.ceil(chordLength / 6)));
+
+      for (let step = 1; step <= steps; step++) {
+        const t = step / steps;
+        const t2 = t * t;
+        const t3 = t2 * t;
+        result.push({
+          x: 0.5 * (
+            2 * p1[0] +
+            (-p0[0] + p2[0]) * t +
+            (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
+            (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3
+          ),
+          y: 0.5 * (
+            2 * p1[1] +
+            (-p0[1] + p2[1]) * t +
+            (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
+            (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3
+          )
+        });
+      }
+    }
+    return result;
   }
 
   function getPathGeometry(points) {
@@ -165,8 +212,10 @@
       return { x: 0, y: 0, dx: 0, dy: 0 };
     }
 
-    let normalizedDistance = finiteNumber(distance, 0) % geometry.totalLength;
-    if (normalizedDistance < 0) normalizedDistance += geometry.totalLength;
+    const normalizedDistance = Math.min(
+      geometry.totalLength,
+      Math.max(0, finiteNumber(distance, 0))
+    );
 
     let low = 0;
     let high = geometry.segments.length - 1;

@@ -24,13 +24,17 @@ Select any arrow or line element on the canvas to reveal the Excali Up floating 
 * **Independent tuning**: Different lines can have different styles, directions, and speeds simultaneously.
 * **Collapsible tuning panel**: Click the gear icon to reveal slider and pill controls.
 
-### 3. Six Beautiful Motion Styles
+### 3. Ten Beautiful Motion Styles
 * **Particles**: Smooth dot flows traveling along paths.
 * **Marching Ants**: Stylized dashed borders in motion.
 * **Gradient Pulse**: Premium glowing gradient sweeps that flow like liquid neon energy.
 * **Ripple Wave**: Concentric expanding ripple rings radiating down the paths.
 * **Packet Train**: Oriented chevron-shaped data packets flowing in sequence.
 * **Snake Trail**: Tapered trails that slither and fade along paths.
+* **Comet**: Bright flowing heads with smooth, fading tails.
+* **Electricity**: Jagged energy bolts that race along the path.
+* **Wave**: A traveling sine wave that follows straight and curved elements.
+* **Dual Flow**: Two offset particle lanes moving in opposite directions.
 
 ### 4. Granular Element Tuning
 * **Direction**: Forward, Reverse, or Bounce (ping-pong animation).

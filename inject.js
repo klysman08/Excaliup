@@ -832,6 +832,18 @@
           case 'snake':
             drawSnakeTrail(ctx, el, geometry, elOffset, config);
             break;
+          case 'comet':
+            drawComet(ctx, el, geometry, elOffset, config);
+            break;
+          case 'electricity':
+            drawElectricity(ctx, el, geometry, elOffset, config);
+            break;
+          case 'wave':
+            drawFlowWave(ctx, el, geometry, elOffset, config);
+            break;
+          case 'dual':
+            drawDualFlow(ctx, el, geometry, elOffset, config);
+            break;
           default:
             drawParticles(ctx, el, geometry, elOffset, config);
         }
@@ -1189,11 +1201,159 @@
     ctx.restore();
   }
 
+  function drawComet(ctx, el, geometry, offset, config) {
+    const color = el.strokeColor || '#1e1e1e';
+    const strokeWidth = el.strokeWidth || 2;
+    const length = geometry.totalLength;
+    const size = (config.particleSize || 3) / 3;
+    const spacing = Math.max(70, (config.particleSpacing || 50) * 2.5);
+    const tailLength = Math.min(120 * size, spacing * 0.72);
+    const steps = Math.max(10, Math.round(24 * flowFrameBudget.sampleScale));
+    if (!length) return;
+
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineCap = 'round';
+    let headDistance = ((offset * 1.45) % spacing + spacing) % spacing;
+    while (headDistance < length + tailLength) {
+      for (let step = 0; step < steps; step++) {
+        const progress = step / steps;
+        const d1 = headDistance - progress * tailLength;
+        const d2 = headDistance - ((step + 1) / steps) * tailLength;
+        if (d1 < 0 || d2 > length) continue;
+        const from = getPointAtLength(geometry, Math.min(length, d1));
+        const to = getPointAtLength(geometry, Math.max(0, d2));
+        const strength = 1 - progress;
+        ctx.globalAlpha = strength * strength * 0.8;
+        ctx.lineWidth = Math.max(0.7, (strokeWidth + 3) * size * strength);
+        ctx.shadowColor = color;
+        ctx.shadowBlur = getGlowBlur(config) * strength;
+        ctx.beginPath();
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(to.x, to.y);
+        ctx.stroke();
+      }
+      if (headDistance <= length) {
+        const head = getPointAtLength(geometry, headDistance);
+        ctx.globalAlpha = 1;
+        ctx.shadowBlur = getGlowBlur(config) * 1.8;
+        ctx.beginPath();
+        ctx.arc(head.x, head.y, Math.max(2, (strokeWidth + 1.5) * size), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      headDistance += spacing;
+    }
+    ctx.restore();
+  }
+
+  function drawElectricity(ctx, el, geometry, offset, config) {
+    const color = el.strokeColor || '#1e1e1e';
+    const strokeWidth = el.strokeWidth || 2;
+    const length = geometry.totalLength;
+    const size = (config.particleSize || 3) / 3;
+    const spacing = Math.max(70, (config.particleSpacing || 50) * 2);
+    const boltLength = Math.min(100, spacing * 0.68);
+    if (!length) return;
+
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(1, strokeWidth * 0.8 * size);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.shadowColor = color;
+    ctx.shadowBlur = getGlowBlur(config) * 1.4;
+    let start = ((offset * 1.8) % spacing + spacing) % spacing;
+    while (start < length) {
+      const end = Math.min(length, start + boltLength);
+      ctx.beginPath();
+      let index = 0;
+      for (let distance = start; distance <= end; distance += 7, index++) {
+        const point = getPointAtLength(geometry, distance);
+        const fade = Math.sin(Math.PI * (distance - start) / Math.max(1, end - start));
+        const jitter = Math.sin(index * 12.9898 + Math.floor(offset / 3) * 7.23) * 5 * size * fade;
+        const x = point.x - point.dy * jitter;
+        const y = point.y + point.dx * jitter;
+        if (index === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      start += spacing;
+    }
+    ctx.restore();
+  }
+
+  function drawFlowWave(ctx, el, geometry, offset, config) {
+    const color = el.strokeColor || '#1e1e1e';
+    const strokeWidth = el.strokeWidth || 2;
+    const length = geometry.totalLength;
+    const size = (config.particleSize || 3) / 3;
+    const wavelength = Math.max(24, config.particleSpacing || 50);
+    const amplitude = (3 + strokeWidth * 1.5) * size;
+    const sampleDistance = flowFrameBudget.sampleScale < 1 ? 6 : 4;
+    if (!length) return;
+
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(1, strokeWidth * 0.75 * size);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.shadowColor = color;
+    ctx.shadowBlur = getGlowBlur(config);
+    ctx.beginPath();
+    let index = 0;
+    for (let distance = 0; distance <= length; distance += sampleDistance, index++) {
+      const point = getPointAtLength(geometry, Math.min(distance, length));
+      const displacement = Math.sin((distance - offset * 1.5) * Math.PI * 2 / wavelength) * amplitude;
+      const x = point.x - point.dy * displacement;
+      const y = point.y + point.dx * displacement;
+      if (index === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawDualFlow(ctx, el, geometry, offset, config) {
+    const color = el.strokeColor || '#1e1e1e';
+    const strokeWidth = el.strokeWidth || 2;
+    const length = geometry.totalLength;
+    const spacing = Math.max(24, config.particleSpacing || 50);
+    const size = (config.particleSize || 3) / 3;
+    const radius = Math.max(1.5, strokeWidth * 0.8 * size);
+    const phase = ((offset % spacing) + spacing) % spacing;
+    if (!length) return;
+
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(1, radius * 0.6);
+    ctx.shadowColor = color;
+    ctx.shadowBlur = getGlowBlur(config);
+    for (let stream = 0; stream < 2; stream++) {
+      let distance = stream === 0 ? phase : (spacing - phase + spacing / 2) % spacing;
+      while (distance < length) {
+        const point = getPointAtLength(geometry, distance);
+        const laneOffset = radius * 1.5 * (stream === 0 ? 1 : -1);
+        ctx.beginPath();
+        ctx.arc(point.x - point.dy * laneOffset, point.y + point.dx * laneOffset, radius, 0, Math.PI * 2);
+        if (stream === 0) ctx.fill();
+        else ctx.stroke();
+        distance += spacing;
+      }
+    }
+    ctx.restore();
+  }
+
   // ═══════════════════════════════════════════════
   // IN-CANVAS FLOATING TOOLBAR
   // ═══════════════════════════════════════════════
 
   const ANIMATION_STYLES = [
+    { id: 'comet', label: 'Comet', icon: '&#9732;' },
+    { id: 'electricity', label: 'Electric', icon: '∿' },
+    { id: 'wave', label: 'Wave', icon: '&#8767;' },
+    { id: 'dual', label: 'Dual', icon: '&#8644;' },
     { id: 'particles', label: 'Particles', icon: '●' },
     { id: 'dashes', label: 'Ants', icon: '⋯' },
     { id: 'gradient', label: 'Pulse', icon: '◐' },
@@ -1344,6 +1504,9 @@
         display: flex;
         align-items: center;
         gap: 3px;
+        max-width: calc(100vw - 24px);
+        overflow-x: auto;
+        scrollbar-width: none;
         background: rgba(18, 18, 26, 0.92);
         backdrop-filter: blur(16px);
         -webkit-backdrop-filter: blur(16px);
@@ -1351,6 +1514,9 @@
         border-radius: 14px;
         padding: 5px 8px;
         box-shadow: 0 4px 24px rgba(0,0,0,0.45), 0 0 16px rgba(140, 90, 220, 0.08);
+      }
+      .excaligif-toolbar-main::-webkit-scrollbar {
+        display: none;
       }
       .excaligif-toolbar-label {
         font-size: 11px;
@@ -1372,6 +1538,7 @@
       }
       .excaligif-toolbar-btn {
         display: flex;
+        flex-shrink: 0;
         align-items: center;
         gap: 4px;
         padding: 5px 10px;

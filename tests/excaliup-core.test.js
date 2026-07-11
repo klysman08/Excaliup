@@ -34,6 +34,12 @@ test('normalizes element configuration enums and ranges', () => {
   });
 });
 
+test('accepts every extended motion style', () => {
+  for (const style of ['comet', 'electricity', 'wave', 'dual']) {
+    assert.equal(core.normalizeElementConfig({ style }).style, style);
+  }
+});
+
 test('builds rotated path points around the element center', () => {
   const points = core.getPathPoints({
     x: 10,
@@ -59,7 +65,24 @@ test('handles zero-length segments and finds points with binary lookup', () => {
   assert.equal(geometry.segments.length, 2);
   assert.equal(geometry.totalLength, 20);
   assert.deepEqual(core.getPointAtLength(geometry, 15), { x: 10, y: 5, dx: 0, dy: 1 });
+  assert.deepEqual(core.getPointAtLength(geometry, 20), { x: 10, y: 10, dx: 0, dy: 1 });
   assert.deepEqual(core.getPointAtLength(core.getPathGeometry([]), 5), { x: 0, y: 0, dx: 0, dy: 0 });
+});
+
+test('samples rounded linear elements as curves through their control points', () => {
+  const points = core.getPathPoints({
+    x: 10,
+    y: 20,
+    angle: 0,
+    roundness: { type: 2 },
+    points: [[0, 0], [50, 50], [100, 0]]
+  });
+
+  assert.ok(points.length > 3);
+  assert.deepEqual(points[0], { x: 10, y: 20 });
+  assert.deepEqual(points.at(-1), { x: 110, y: 20 });
+  assert.ok(points.some((point) => point.x === 60 && point.y === 70));
+  assert.ok(points.some((point) => point.x > 10 && point.x < 60 && point.y > 20));
 });
 
 test('computes viewport bounds and culls offscreen geometry', () => {
