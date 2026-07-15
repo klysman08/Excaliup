@@ -47,6 +47,7 @@ test('popup reads the manifest version and reports flow-only runtime as active',
             connected: true,
             enabled: false,
             activeGifCount: 0,
+            activeAnimatedSvgCount: 2,
             animatedElementCount: 2,
             settings: { gifsEnabled: false, flowEnabled: true, gifSpeed: 1 }
           });
@@ -65,5 +66,6 @@ test('popup reads the manifest version and reports flow-only runtime as active',
   assert.equal(elements.get('gifToggle').checked, false);
   assert.equal(elements.get('flowToggle').checked, true);
   assert.equal(elements.get('gifSettingsGroup').style.display, 'none');
+  assert.equal(elements.get('gifCount').textContent, 2);
   assert.equal(elements.get('engineStatus').textContent, 'Running');
 });

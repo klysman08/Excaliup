@@ -17,6 +17,18 @@ test('Iconify is packaged locally and the picker supports all collections', () =
   assert.match(injectSource, /id="excaligif-icons-pack"/);
   assert.match(injectSource, /id="excaligif-icons-category"/);
   assert.match(injectSource, /id="excaligif-icons-tag"/);
+  assert.match(injectSource, /\['__animated__', 'Animated SVG'\]/);
+  assert.match(injectSource, /class AnimatedSvgPlayer/);
+  assert.match(injectSource, /queueAnimatedSvgImport\(svgContent\)/);
+  assert.match(injectSource, /id = 'ExcaliGifSvgOverlay'/);
+  assert.match(injectSource, /attachShadow\(\{ mode: 'closed' \}\)/);
+  assert.match(injectSource, /animation\.setAttribute\('repeatCount', 'indefinite'\)/);
+  assert.match(injectSource, /animation-iteration-count: infinite !important/);
+  assert.match(injectSource, /pauseAnimations/);
+  assert.match(injectSource, /unpauseAnimations/);
+  assert.doesNotMatch(injectSource, /this\.nextFrameAt = now \+ \(1000 \/ 30\)/);
+  assert.match(injectSource, /if \(iconFetchController\) iconFetchController\.abort\(\)/);
+  assert.match(injectSource, /if \(svgCache\.size >= 256\)/);
   assert.match(injectSource, /searchParams\.set\('limit', '999'\)/);
   assert.doesNotMatch(injectSource, /fonts\.googleapis\.com|cdn\.jsdelivr\.net/);
   assert.equal(manifest.web_accessible_resources, undefined);

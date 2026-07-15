@@ -40,6 +40,14 @@ test('accepts every extended motion style', () => {
   }
 });
 
+test('detects native and CSS animated SVG markup', () => {
+  assert.equal(core.isAnimatedSvgMarkup('<svg><animate attributeName="opacity" dur="1s" /></svg>'), true);
+  assert.equal(core.isAnimatedSvgMarkup('<svg><animateTransform attributeName="transform" /></svg>'), true);
+  assert.equal(core.isAnimatedSvgMarkup('<svg><style>@keyframes spin { to { opacity: 0 } } path { animation: spin 1s infinite; }</style></svg>'), true);
+  assert.equal(core.isAnimatedSvgMarkup('<svg><path d="M0 0h10v10z" /></svg>'), false);
+  assert.equal(core.isAnimatedSvgMarkup('<animate attributeName="opacity" />'), false);
+});
+
 test('builds rotated path points around the element center', () => {
   const points = core.getPathPoints({
     x: 10,

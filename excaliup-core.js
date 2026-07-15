@@ -295,6 +295,15 @@
     };
   }
 
+  function isAnimatedSvgMarkup(value) {
+    if (typeof value !== 'string' || !/<svg\b/i.test(value)) return false;
+    return (
+      /<animate(?:Motion|Transform)?\b/i.test(value) ||
+      /@keyframes\s+[\w-]+/i.test(value) ||
+      /(?:^|[;{])\s*animation(?:-name)?\s*:/i.test(value)
+    );
+  }
+
   class AdaptiveFrameBudget {
     constructor(options = {}) {
       this.windowDuration = options.windowDuration || 1000;
@@ -374,6 +383,7 @@
     getViewportBounds,
     intersectsBounds,
     buildGifRefreshElements,
+    isAnimatedSvgMarkup,
     AdaptiveFrameBudget
   });
 });

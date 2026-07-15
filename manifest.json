@@ -3,7 +3,7 @@
   "name": "Excali Up: Motion effects, GIFs and Icons for Excalidraw",
   "short_name": "Excali Up",
   "version": "3.0.1",
-  "description": "Play animated GIFs, add motion effects to lines and arrows, and search Iconify's open-source icon library inside Excalidraw.",
+  "description": "Play GIFs and animated SVGs, add motion effects, and search Iconify's open-source icon library inside Excalidraw.",
   "homepage_url": "https://excaliup.astrofocus.app/",
   "icons": {
     "16": "icons/icon16.png",

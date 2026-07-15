@@ -12,6 +12,8 @@
 
   let currentApp = null;
   const activeGifs = new Map(); // fileId -> GifPlayer instance
+  const activeAnimatedSvgs = new Map(); // fileId -> AnimatedSvgPlayer instance
+  const pendingAnimatedSvgImports = [];
   const currentSettings = { ...Core.DEFAULT_SETTINGS };
 
   // Iconify sidebar state
@@ -31,8 +33,10 @@
   let iconSearchTimer = null;
   let iconRequestId = 0;
   let iconCollectionsPromise = null;
+  let iconFetchController = null;
 
   let overlayAnimationFrameId = null;
+  let svgOverlayTimer = null;
   let gifSchedulerTimer = null;
   let flowOffset = 0;
   let lastFlowDrawAt = 0;
@@ -455,6 +459,322 @@
     }
   }
 
+  function queueAnimatedSvgImport(markup) {
+    if (!Core.isAnimatedSvgMarkup(markup)) return false;
+    const now = Date.now();
+    while (pendingAnimatedSvgImports.length && pendingAnimatedSvgImports[0].expiresAt <= now) {
+      pendingAnimatedSvgImports.shift();
+    }
+    pendingAnimatedSvgImports.push({ markup, expiresAt: now + 10000 });
+    return true;
+  }
+
+  function takePendingAnimatedSvgImport() {
+    const now = Date.now();
+    while (pendingAnimatedSvgImports.length && pendingAnimatedSvgImports[0].expiresAt <= now) {
+      pendingAnimatedSvgImports.shift();
+    }
+    const pending = pendingAnimatedSvgImports.shift();
+    return pending ? pending.markup : null;
+  }
+
+  function sanitizeAnimatedSvgMarkup(markup) {
+    const documentNode = new DOMParser().parseFromString(markup, 'image/svg+xml');
+    if (documentNode.querySelector('parsererror') || documentNode.documentElement.localName !== 'svg') {
+      throw new Error('Invalid animated SVG');
+    }
+
+    for (const node of documentNode.querySelectorAll('script, foreignObject, iframe, object, embed')) {
+      node.remove();
+    }
+    for (const node of documentNode.querySelectorAll('*')) {
+      for (const attribute of [...node.attributes]) {
+        const name = attribute.name.toLowerCase();
+        const value = attribute.value.trim();
+        if (name.startsWith('on')) {
+          node.removeAttribute(attribute.name);
+        } else if ((name === 'href' || name === 'xlink:href') && value && !value.startsWith('#')) {
+          node.removeAttribute(attribute.name);
+        }
+      }
+    }
+
+    const svg = documentNode.documentElement;
+    for (const animation of svg.querySelectorAll('animate, animateTransform, animateMotion')) {
+      animation.setAttribute('repeatCount', 'indefinite');
+    }
+    const loopStyle = documentNode.createElementNS('http://www.w3.org/2000/svg', 'style');
+    loopStyle.textContent = '* { animation-iteration-count: infinite !important; }';
+    svg.appendChild(loopStyle);
+    svg.setAttribute('width', '100%');
+    svg.setAttribute('height', '100%');
+    svg.setAttribute('preserveAspectRatio', svg.getAttribute('preserveAspectRatio') || 'xMidYMid meet');
+    svg.style.display = 'block';
+    return svg.outerHTML;
+  }
+
+  function ensureAnimatedSvgOverlay() {
+    const interactiveCanvas = document.querySelector('.excalidraw__canvas.interactive');
+    if (!interactiveCanvas || !interactiveCanvas.parentNode) return null;
+
+    let overlay = document.getElementById('ExcaliGifSvgOverlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'ExcaliGifSvgOverlay';
+      overlay.style.position = 'absolute';
+      overlay.style.top = '0';
+      overlay.style.left = '0';
+      overlay.style.overflow = 'hidden';
+      overlay.style.pointerEvents = 'none';
+      overlay.style.zIndex = '2';
+      interactiveCanvas.parentNode.insertBefore(overlay, interactiveCanvas.nextSibling);
+      if (window.getComputedStyle(interactiveCanvas.parentNode).position === 'static') {
+        interactiveCanvas.parentNode.style.position = 'relative';
+      }
+    }
+
+    const width = interactiveCanvas.clientWidth;
+    const height = interactiveCanvas.clientHeight;
+    overlay.style.width = `${width}px`;
+    overlay.style.height = `${height}px`;
+    return overlay;
+  }
+
+  function removeAnimatedSvgOverlayIfEmpty() {
+    const overlay = document.getElementById('ExcaliGifSvgOverlay');
+    if (overlay && !overlay.childElementCount) overlay.remove();
+  }
+
+  function stopAnimatedSvgOverlayLoop() {
+    if (svgOverlayTimer) {
+      clearTimeout(svgOverlayTimer);
+      svgOverlayTimer = null;
+    }
+  }
+
+  function updateAnimatedSvgOverlay() {
+    svgOverlayTimer = null;
+    if (document.hidden || !currentSettings.gifsEnabled || !currentApp || !activeAnimatedSvgs.size) return;
+
+    const overlay = ensureAnimatedSvgOverlay();
+    if (!overlay) return;
+    const elements = currentApp.api.getSceneElements();
+    const imagesByFileId = new Map();
+    for (const element of elements) {
+      if (element.type === 'image' && !element.isDeleted && element.fileId) {
+        if (!imagesByFileId.has(element.fileId)) imagesByFileId.set(element.fileId, []);
+        imagesByFileId.get(element.fileId).push(element);
+      }
+    }
+
+    const zoom = currentApp.state.zoom ? currentApp.state.zoom.value : 1;
+    const scrollX = currentApp.state.scrollX || 0;
+    const scrollY = currentApp.state.scrollY || 0;
+    for (const player of activeAnimatedSvgs.values()) {
+      const playerElements = player.isPlaying ? imagesByFileId.get(player.fileId) || [] : [];
+      player.syncOverlayElements(playerElements);
+      for (const element of playerElements) {
+        const overlayElement = player.overlayElements.get(element.id);
+        if (!overlayElement) continue;
+        const scaleX = Array.isArray(element.scale) ? element.scale[0] : 1;
+        const scaleY = Array.isArray(element.scale) ? element.scale[1] : 1;
+        const left = (element.x + scrollX) * zoom;
+        const top = (element.y + scrollY) * zoom;
+        const width = Math.abs(element.width * zoom);
+        const height = Math.abs(element.height * zoom);
+        const angle = element.angle || 0;
+        const opacity = element.opacity == null ? 1 : element.opacity / 100;
+        const signature = [left, top, width, height, angle, scaleX, scaleY, opacity]
+          .map(value => Math.round(value * 1000) / 1000)
+          .join(':');
+
+        if (signature !== player.lastTransforms.get(element.id)) {
+          player.lastTransforms.set(element.id, signature);
+          const style = overlayElement.style;
+          style.left = `${left}px`;
+          style.top = `${top}px`;
+          style.width = `${width}px`;
+          style.height = `${height}px`;
+          style.opacity = String(opacity);
+          style.transform = `rotate(${angle}rad) scale(${scaleX}, ${scaleY})`;
+        }
+        overlayElement.style.display = 'block';
+      }
+    }
+
+    // The SVG timeline is browser-native; this timer only tracks Excalidraw transforms.
+    svgOverlayTimer = setTimeout(updateAnimatedSvgOverlay, 33);
+  }
+
+  function scheduleAnimatedSvgOverlay() {
+    if (!svgOverlayTimer && !document.hidden && currentSettings.gifsEnabled && currentApp) {
+      svgOverlayTimer = setTimeout(updateAnimatedSvgOverlay, 0);
+    }
+  }
+
+  class AnimatedSvgPlayer {
+    constructor(fileId, cacheEntry, sourceMarkup = null) {
+      this.fileId = fileId;
+      this.cacheEntry = cacheEntry;
+      this.originalImage = cacheEntry.image;
+      this.sourceMarkup = sourceMarkup;
+      this.safeMarkup = '';
+      this.transparentCanvas = null;
+      this.overlayElements = new Map();
+      this.svgElements = new Map();
+      this.lastTransforms = new Map();
+      this.lastSrc = '';
+      this.isLoaded = false;
+      this.isPlaying = false;
+      this.isDestroyed = false;
+      this.decodeGeneration = 0;
+      this.abortController = null;
+      this.loadPromise = this.init();
+    }
+
+    async init() {
+      const src = this.cacheEntry && this.cacheEntry.image && this.cacheEntry.image.src;
+      const generation = ++this.decodeGeneration;
+      if (this.abortController) this.abortController.abort();
+      this.abortController = null;
+      this.lastSrc = src || '';
+      this.isLoaded = false;
+
+      if (!src && !this.sourceMarkup) return;
+      // Let the image-cache hook register this player before any scene refresh can run.
+      await Promise.resolve();
+      if (this.isDestroyed || generation !== this.decodeGeneration) return;
+
+      const abortController = new AbortController();
+      this.abortController = abortController;
+      try {
+        let markup = this.sourceMarkup;
+        if (!markup) {
+          const response = await fetch(src, { signal: abortController.signal });
+          if (!response.ok && !src.startsWith('data:') && !src.startsWith('blob:')) {
+            throw new Error(`SVG request failed with status ${response.status}`);
+          }
+          markup = await response.text();
+        }
+        if (this.isDestroyed || generation !== this.decodeGeneration) return;
+
+        if (!Core.isAnimatedSvgMarkup(markup)) {
+          if (activeAnimatedSvgs.get(this.fileId) === this) activeAnimatedSvgs.delete(this.fileId);
+          return;
+        }
+
+        const safeMarkup = sanitizeAnimatedSvgMarkup(markup);
+        if (this.isDestroyed || generation !== this.decodeGeneration) return;
+
+        const width = this.originalImage && this.originalImage.naturalWidth || 1;
+        const height = this.originalImage && this.originalImage.naturalHeight || 1;
+        const transparentCanvas = document.createElement('canvas');
+        transparentCanvas.width = width;
+        transparentCanvas.height = height;
+        Object.defineProperties(transparentCanvas, {
+          tagName: { value: 'IMG' },
+          complete: { value: true },
+          naturalWidth: { value: width },
+          naturalHeight: { value: height }
+        });
+
+        this.safeMarkup = safeMarkup;
+        this.transparentCanvas = transparentCanvas;
+        this.isLoaded = true;
+        if (currentSettings.gifsEnabled) this.start();
+      } catch (error) {
+        if (error.name !== 'AbortError') {
+          console.error(`[Excali Up] Animated SVG detection failed for ${this.fileId}:`, error);
+        }
+      } finally {
+        if (this.abortController === abortController) this.abortController = null;
+      }
+    }
+
+    updateCacheEntry(cacheEntry) {
+      const incomingImage = cacheEntry && cacheEntry.image;
+      this.cacheEntry = cacheEntry;
+      if (this.isLoaded && this.transparentCanvas && this.isPlaying) {
+        cacheEntry.image = this.transparentCanvas;
+        return;
+      }
+      if (incomingImage) this.originalImage = incomingImage;
+      const src = incomingImage && incomingImage.src;
+      if (src && src !== this.lastSrc && !this.sourceMarkup) this.loadPromise = this.init();
+    }
+
+    syncOverlayElements(elements) {
+      const activeElementIds = new Set(elements.map(element => element.id));
+      for (const [elementId, overlayElement] of this.overlayElements.entries()) {
+        if (!activeElementIds.has(elementId)) {
+          overlayElement.remove();
+          this.overlayElements.delete(elementId);
+          this.svgElements.delete(elementId);
+          this.lastTransforms.delete(elementId);
+        }
+      }
+
+      const overlay = ensureAnimatedSvgOverlay();
+      if (!overlay) return;
+      for (const element of elements) {
+        if (this.overlayElements.has(element.id)) continue;
+        const overlayElement = document.createElement('div');
+        overlayElement.dataset.fileId = this.fileId;
+        overlayElement.dataset.elementId = element.id;
+        overlayElement.style.position = 'absolute';
+        overlayElement.style.transformOrigin = 'center center';
+        overlayElement.style.pointerEvents = 'none';
+        overlayElement.style.display = 'none';
+        const shadowRoot = overlayElement.attachShadow({ mode: 'closed' });
+        shadowRoot.innerHTML = this.safeMarkup;
+        overlay.appendChild(overlayElement);
+        this.overlayElements.set(element.id, overlayElement);
+        this.svgElements.set(element.id, shadowRoot.querySelector('svg'));
+      }
+    }
+
+    start() {
+      if (this.isDestroyed || !this.isLoaded) return;
+      if (this.cacheEntry && this.transparentCanvas) this.cacheEntry.image = this.transparentCanvas;
+      this.isPlaying = true;
+      for (const svgElement of this.svgElements.values()) {
+        if (svgElement && typeof svgElement.unpauseAnimations === 'function') svgElement.unpauseAnimations();
+      }
+      refreshGifElements(new Set([this.fileId]));
+      scheduleAnimatedSvgOverlay();
+    }
+
+    stop() {
+      this.isPlaying = false;
+      if (this.cacheEntry && this.originalImage) this.cacheEntry.image = this.originalImage;
+      for (const overlayElement of this.overlayElements.values()) overlayElement.style.display = 'none';
+      for (const svgElement of this.svgElements.values()) {
+        if (svgElement && typeof svgElement.pauseAnimations === 'function') svgElement.pauseAnimations();
+      }
+      if (!this.isDestroyed) refreshGifElements(new Set([this.fileId]));
+    }
+
+    destroy() {
+      this.stop();
+      this.isDestroyed = true;
+      this.decodeGeneration++;
+      if (this.abortController) this.abortController.abort();
+      this.abortController = null;
+      for (const overlayElement of this.overlayElements.values()) overlayElement.remove();
+      if (this.transparentCanvas) {
+        this.transparentCanvas.width = 0;
+        this.transparentCanvas.height = 0;
+      }
+      this.overlayElements.clear();
+      this.svgElements.clear();
+      this.lastTransforms.clear();
+      this.transparentCanvas = null;
+      this.cacheEntry = null;
+      this.isLoaded = false;
+      removeAnimatedSvgOverlayIfEmpty();
+    }
+  }
+
   function stopGifScheduler() {
     if (gifSchedulerTimer) {
       clearTimeout(gifSchedulerTimer);
@@ -543,6 +863,13 @@
               cacheEntry.image = player.activeCanvas;
             }
           }
+        } else if (cacheEntry && cacheEntry.mimeType === 'image/svg+xml') {
+          if (!activeAnimatedSvgs.has(fileId)) {
+            const sourceMarkup = takePendingAnimatedSvgImport();
+            activeAnimatedSvgs.set(fileId, new AnimatedSvgPlayer(fileId, cacheEntry, sourceMarkup));
+          } else {
+            activeAnimatedSvgs.get(fileId).updateCacheEntry(cacheEntry);
+          }
         }
         return res;
       };
@@ -555,6 +882,8 @@
         if (cacheEntry && cacheEntry.mimeType === 'image/gif' && !activeGifs.has(fileId)) {
           console.log("[Excali Up] Hooked existing GIF fileId:", fileId);
           activeGifs.set(fileId, new GifPlayer(fileId, cacheEntry, app));
+        } else if (cacheEntry && cacheEntry.mimeType === 'image/svg+xml' && !activeAnimatedSvgs.has(fileId)) {
+          activeAnimatedSvgs.set(fileId, new AnimatedSvgPlayer(fileId, cacheEntry));
         }
       }
     }
@@ -570,12 +899,16 @@
   function detachCurrentApp() {
     stopGifScheduler();
     stopOverlayLoop();
+    stopAnimatedSvgOverlayLoop();
     if (animationMetadataTimer) clearTimeout(animationMetadataTimer);
     animationMetadataTimer = null;
     pendingAnimationMetadata.clear();
     pendingAnimationMetadataRemovals.clear();
     for (const player of activeGifs.values()) player.destroy();
     activeGifs.clear();
+    for (const player of activeAnimatedSvgs.values()) player.destroy();
+    activeAnimatedSvgs.clear();
+    pendingAnimatedSvgImports.length = 0;
     geometryCache.clear();
     unhookImageCache(currentApp);
     removeSidebarElements();
@@ -592,12 +925,12 @@
     hookImageCache(app);
     createToolbar();
     createSidebarButtonAndPanel();
-    scanAndCleanupGifs();
+    scanAndCleanupMedia();
     updateToolbar(true);
     reconcileRuntime();
   }
 
-  function scanAndCleanupGifs() {
+  function scanAndCleanupMedia() {
     if (!currentApp) return;
     const elements = currentApp.api ? currentApp.api.getSceneElements() : [];
     const activeFileIds = new Set(elements.filter(e => e.type === 'image').map(e => e.fileId));
@@ -610,6 +943,14 @@
         activeGifs.delete(fileId);
       }
     }
+    for (const [fileId, player] of activeAnimatedSvgs.entries()) {
+      const cacheEntry = currentApp.imageCache.get(fileId);
+      if (!activeFileIds.has(fileId) || !cacheEntry) {
+        player.destroy();
+        activeAnimatedSvgs.delete(fileId);
+      }
+    }
+    if (!activeAnimatedSvgs.size) stopAnimatedSvgOverlayLoop();
     
     // Avoid erasing persisted assignments while Excalidraw is still hydrating an empty scene.
     if (elements.length === 0) {
@@ -644,7 +985,7 @@
     } else if (!app && currentApp) {
       detachCurrentApp();
     }
-    scanAndCleanupGifs();
+    scanAndCleanupMedia();
   }
 
   // Helper functions for path and flow animations
@@ -861,13 +1202,19 @@
       for (const player of activeGifs.values()) {
         if (player.isLoaded && !player.isPlaying) player.start();
       }
+      for (const player of activeAnimatedSvgs.values()) {
+        if (player.isLoaded && !player.isPlaying) player.start();
+      }
       scheduleGifTick();
-    } else if (!currentSettings.gifsEnabled) {
+    } else if (!currentSettings.gifsEnabled || document.hidden) {
       for (const player of activeGifs.values()) {
         if (player.isPlaying) player.stop();
       }
-    } else {
+      for (const player of activeAnimatedSvgs.values()) {
+        if (player.isPlaying) player.stop();
+      }
       stopGifScheduler();
+      stopAnimatedSvgOverlayLoop();
     }
 
     reconcileFlowRuntime();
@@ -2048,6 +2395,10 @@
     if (document.hidden) {
       stopGifScheduler();
       stopOverlayLoop();
+      stopAnimatedSvgOverlayLoop();
+      for (const player of activeAnimatedSvgs.values()) {
+        if (player.isPlaying) player.stop();
+      }
       if (saveAnimatedElementsTimer) saveAnimatedElements(true);
       return;
     }
@@ -2066,6 +2417,7 @@
       connected: !!currentApp,
       enabled: currentSettings.gifsEnabled,
       activeGifCount: activeGifs.size,
+      activeAnimatedSvgCount: activeAnimatedSvgs.size,
       animatedElementCount: animatedElements.size,
       settings: { ...currentSettings }
     };
@@ -2744,6 +3096,9 @@
   }
 
   function removeSidebarElements() {
+    clearTimeout(iconSearchTimer);
+    if (iconFetchController) iconFetchController.abort();
+    iconFetchController = null;
     if (sidebarButton) {
       sidebarButton.remove();
       sidebarButton = null;
@@ -2912,7 +3267,8 @@
   function getMatchingCollections() {
     if (!iconCollections) return [];
     return Object.entries(iconCollections).filter(([, info]) => {
-      if (activeCategory && info.category !== activeCategory) return false;
+      if (activeCategory === '__animated__' && !(info.tags || []).includes('Contains Animations')) return false;
+      if (activeCategory && activeCategory !== '__animated__' && info.category !== activeCategory) return false;
       if (activeTag && !(info.tags || []).includes(activeTag)) return false;
       return true;
     });
@@ -2938,13 +3294,17 @@
     if (!iconCollections || !sidebarElement) return;
     const allCollections = Object.values(iconCollections);
     const categories = [...new Set(allCollections.map(info => info.category).filter(Boolean))].sort();
+    const categoryOptions = [
+      ['__animated__', 'Animated SVG'],
+      ...categories.map(value => [value, value])
+    ];
     const tags = [...new Set(allCollections.flatMap(info => info.tags || []))].sort();
     const packs = getMatchingCollections().sort((a, b) => a[1].name.localeCompare(b[1].name));
 
     setSelectOptions(
       sidebarElement.querySelector('#excaligif-icons-category'),
       'All categories',
-      categories.map(value => [value, value]),
+      categoryOptions,
       activeCategory
     );
     setSelectOptions(
@@ -3003,6 +3363,9 @@
 
   async function loadIconResults() {
     if (!iconCollections) return loadIconCollections();
+    if (iconFetchController) iconFetchController.abort();
+    const fetchController = new AbortController();
+    iconFetchController = fetchController;
     const requestId = ++iconRequestId;
     const grid = document.getElementById('excaligif-icons-grid');
     if (grid) {
@@ -3019,7 +3382,7 @@
         url.searchParams.set('limit', '999');
         if (activePrefix) {
           url.searchParams.set('prefix', activePrefix);
-        } else if (activeTag) {
+        } else if (activeTag || activeCategory === '__animated__') {
           const prefixes = matchingCollections.map(([prefix]) => prefix);
           if (prefixes.length === 0) {
             if (requestId !== iconRequestId) return;
@@ -3031,12 +3394,14 @@
         } else if (activeCategory) {
           url.searchParams.set('category', activeCategory);
         }
-        const response = await fetch(url);
+        const response = await fetch(url, { signal: fetchController.signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
         iconNames = data.icons || [];
       } else if (activePrefix) {
-        const response = await fetch(`https://api.iconify.design/collection?prefix=${encodeURIComponent(activePrefix)}`);
+        const response = await fetch(`https://api.iconify.design/collection?prefix=${encodeURIComponent(activePrefix)}`, {
+          signal: fetchController.signal
+        });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
         const names = [
@@ -3055,10 +3420,13 @@
       renderIconsGrid();
     } catch (error) {
       if (requestId !== iconRequestId) return;
+      if (error.name === 'AbortError') return;
       console.error('[Excali Up] Iconify search failed:', error);
       visibleIcons = [];
       if (grid) grid.innerHTML = '<div class="excaligif-icons-error">Failed to load icons. Try again.</div>';
       updatePaginationControls(0);
+    } finally {
+      if (iconFetchController === fetchController) iconFetchController = null;
     }
   }
 
@@ -3095,10 +3463,6 @@
         <span class="icon-name">${icon.name.replace(/[-_]/g, ' ')}</span>
       `;
 
-      card.addEventListener('mouseenter', () => {
-        getSvgContent(icon.icon);
-      });
-
       card.addEventListener('dragstart', (e) => {
         isDraggingIcon = true;
         draggingIconData = { name: icon.name, icon: icon.icon };
@@ -3123,6 +3487,7 @@
             await navigator.clipboard.writeText(svgContent);
             showToast(`"${icon.name}" copied!`);
 
+            queueAnimatedSvgImport(svgContent);
             const clipboardData = new DataTransfer();
             clipboardData.setData('text/plain', svgContent);
             const pasteEvent = new ClipboardEvent('paste', {
@@ -3246,6 +3611,12 @@
     if (!sidebarElement || !sidebarButton) return;
     sidebarElement.classList.remove('open');
     sidebarButton.classList.remove('active');
+    clearTimeout(iconSearchTimer);
+    if (iconFetchController) iconFetchController.abort();
+    const grid = document.getElementById('excaligif-icons-grid');
+    const pagination = document.getElementById('excaligif-icons-pagination');
+    if (grid) grid.innerHTML = '';
+    if (pagination) pagination.innerHTML = '';
   }
 
   function setupCanvasDropIntercept() {
@@ -3289,6 +3660,7 @@
         return;
       }
 
+      queueAnimatedSvgImport(svgContent);
       const file = new File([svgContent], `${name}.svg`, { type: 'image/svg+xml' });
       const dataTransfer = new DataTransfer();
       dataTransfer.items.add(file);
@@ -3322,6 +3694,7 @@
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       let text = await response.text();
       text = cleanSvg(text);
+      if (svgCache.size >= 256) svgCache.delete(svgCache.keys().next().value);
       svgCache.set(iconifyName, text);
       return text;
     } catch (e) {

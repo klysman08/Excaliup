@@ -12,6 +12,7 @@
 Search and browse Iconify's open-source icon sets directly inside Excalidraw via a dedicated, glassmorphic toggle sidebar panel:
 * **All available packs**: Browse more than 200 collections, including Material, Lucide, Tabler, Phosphor, Font Awesome, logos, emoji, and thematic sets.
 * **Library filters**: Narrow packs by collection category and tags such as animated, stroke, precise shapes, and padding.
+* **Animated SVG category**: Browse Iconify's animated collections separately and insert their native SVG animations onto the canvas.
 * **Pagination system**: Renders 96 items per page to prevent browser rendering bottlenecks and keep canvas performance high.
 * **Clean SVG click-to-copy**: Copying an icon fetches its clean vector SVG directly, automatically converting hardcoded fills to current colors for theme compatibility, and pastes it onto the active canvas.
 * **Drag-and-drop support**: Drag any icon directly from the sidebar grid and drop it exactly at your cursor position on the Excalidraw canvas.
@@ -43,8 +44,9 @@ Select any arrow or line element on the canvas to reveal the Excali Up floating 
 * **Spacing**: Gap distance between flow elements from 20px to 120px.
 * **Glow Intensity**: Bloom levels (None, Subtle, Med, Strong).
 
-### 5. Real-time GIF Playback
+### 5. Real-time GIF and Animated SVG Playback
 * Drag and drop any GIF file to watch it render loops on the board.
+* Insert an animated Iconify SVG and keep its native SMIL or CSS animation playing on the Excalidraw canvas.
 * Control playback speed multipliers (0.5x, 1x, 1.5x, 2x) from the extension popup dashboard.
 
 ---
@@ -65,7 +67,7 @@ Excali Up injects a script into the page context (MAIN world) to access the unde
 
 1. **React Fiber Hooking**: It traverses the DOM starting from `.excalidraw__canvas.interactive` to find its React Fiber node (`__reactFiber$...`), climbing up to locate the active Excalidraw stateNode which manages the canvas state.
 2. **Image Cache Interception**: It hooks the Excalidraw `imageCache.set` method. When an image with the MIME type `image/gif` is stored, Excali Up intercepts it.
-3. **GIF Decoding (omggif.js)**: The raw GIF bytes are fetched and decoded frame-by-frame. Each frame is painted on a separate HTML canvas, tracking the animation delay (using a modified port of the `omggif` decoder).
+3. **Animated Media Runtime**: GIF bytes are decoded frame-by-frame with `omggif.js`. Animated SVGs run natively in isolated DOM overlays synchronized with their Excalidraw image elements, avoiding continuous scene redraws while preserving SMIL and CSS timelines.
 4. **Active Canvas Swap**: The static `HTMLImageElement` in Excalidraw's cache is replaced with a single dynamic `HTMLCanvasElement` managed by the extension.
 5. **Floating Toolbar & Canvas Overlay**: The extension overlays a secondary canvas aligned with the interactive canvas. Selecting an element triggers the DOM injection of the floating toolbar panel. Real-time offsets are recalculated per frame on the overlay.
 6. **State Persistence**: Element settings (style, speed, size, spacing, glow, direction) are mapped to element IDs and persisted in `localStorage`. They are automatically loaded when refreshing the page. Deleted elements are cleaned up from the store.

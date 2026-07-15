@@ -62,7 +62,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     gifSettingsGroup.style.display = settings.gifsEnabled ? 'flex' : 'none';
 
-    gifCount.textContent = status.activeGifCount;
+    gifCount.textContent = (status.activeGifCount || 0) + (status.activeAnimatedSvgCount || 0);
     document.getElementById('animatedCount').textContent = status.animatedElementCount || 0;
     engineStatus.textContent = settings.gifsEnabled || settings.flowEnabled ? "Running" : "Paused";
     
