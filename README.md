@@ -100,4 +100,4 @@ Need a steady source of animated pixel art or sprites to add to your Excalidraw 
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the [MIT License](LICENSE).

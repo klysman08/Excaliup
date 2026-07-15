@@ -42,6 +42,7 @@ def package_extension():
         "popup.html",
         "popup.css",
         "popup.js",
+        "LICENSE",
         "icons/icon16.png",
         "icons/icon48.png",
         "icons/icon128.png",
