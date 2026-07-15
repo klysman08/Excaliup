@@ -1,39 +1,57 @@
 // Excali Up Main Page Application Logic
-import { playSelect, playToggle, playSuccess, playError } from './audio.js';
+import { playSelect, playToggle, playSuccess, playError, setMuted, getMuted, setVolume } from './audio.js';
 
 // Preloaded pixel-art GIFs (Base64 encoded to guarantee offline/local loading)
 const SAMPLES = {
   heart: {
     name: "Pixel Heart",
-    // Pulsing pixel heart
     gif: "data:image/gif;base64,R0lGODlhDwAPAPQAAAAAAIAAAACAAICAAAAAgIAAgQCAgIDAwAD1AQD1gAD1wQD10QDy8vL09PT29vb4+Pj6+vr8/Pz9/f3///z8/P7+/v///wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACH5BAEAAB8ALAAAAAAPAA8AAAVS4Cdmg2hGZ6oqaUgMQzC8LwwFMCzDNszCMAzHMFTFUizFMAzHMFRVUixFMAzHMFTFUixFMAzHMLwfEFFFUixFMAzHMFRVUixFMDwfEBAAOw=="
   },
   coin: {
     name: "Retro Coin",
-    // Rotating pixel coin
     gif: "data:image/gif;base64,R0lGODlhDwAPAPQAAP///wAAAPj4+Pz8/P7+/v39/fn5+fDwqfLy8u7u7tTUz9zc3MTExPT09Ojo6NTUxNTU1MTEzMTExMzMzOTk5Ozs7NjY2Pj4+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACH5BAEAAB8ALAAAAAAPAA8AAAVK4Cdmg2hGZ6oqaUgMQzC8LwwFMCzDNszCMAzHMFTFUizFMAzHMFRVUixFMAzHMFTFUixFMAzHMLwfEFFFUixFMAzHMFRVUixFMDwfEBAAOw=="
   },
   ghost: {
     name: "Mini Ghost",
-    // Blinking pixel ghost
     gif: "data:image/gif;base64,R0lGODlhDwAPAPQAAAAAAIAAAACAAICAAAAAgIAAgQCAgIDAwAD1AQD1gAD1wQD10QD1+QD2+gD3+wD4/AD5/QD6/gD7/wD8/wD9/wD+/wD//wD///z8/P7+/v///wAAAAAAAAAAAAAAAAAAACH5BAEAAB8ALAAAAAAPAA8AAAVS4Cdmg2hGZ6oqaUgMQzC8LwwFMCzDNszCMAzHMFTFUizFMAzHMFRVUixFMAzHMFTFUixFMAzHMLwfEFFFUixFMAzHMFRVUixFMDwfEBAAOw=="
   }
 };
 
-// Alternate actual sample GIFs (using reliable fallbacks if base64 placeholder styling is identical)
-// We will generate the static canvases directly from the active GIF elements.
+// Simulated Iconify Library Icons
+const ICONIFY_ICONS = [
+  // General Shapes/Icons
+  { name: "Lucide Star", svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>', category: "general" },
+  { name: "Lucide Heart", svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>', category: "general" },
+  { name: "Lucide Home", svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>', category: "general" },
+  { name: "Lucide Check", svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>', category: "general" },
+  { name: "Lucide Search", svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>', category: "general" },
+  { name: "Lucide User", svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>', category: "general" },
+  { name: "Lucide Sparkles", svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707m0-12.728l.707.707m11.314 11.314l.707-.707M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10z"/></svg>', category: "general" },
+  { name: "Lucide Trash", svg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>', category: "general" },
+
+  // Animated SVGs
+  { name: "SVG Spinner", svg: '<svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2"><circle cx="12" cy="12" r="10" stroke-dasharray="32" stroke-dashoffset="0"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/></circle></svg>', category: "animated" },
+  { name: "SVG Pulse", svg: '<svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2"><circle cx="12" cy="12" r="1" fill="none"><animate attributeName="r" values="1;10" dur="1.5s" repeatCount="indefinite"/><animate attributeName="opacity" values="1;0" dur="1.5s" repeatCount="indefinite"/></circle></svg>', category: "animated" },
+  { name: "SVG Rotation", svg: '<svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="2.5s" repeatCount="indefinite"/></path></svg>', category: "animated" }
+];
 
 document.addEventListener('DOMContentLoaded', () => {
   // Global State
   const state = {
     connected: true,
-    enabled: true,
-    flowEnabled: true,
+    enabled: true,      // GIF animations enabled
+    svgEnabled: true,   // SVG playback enabled
+    flowEnabled: true,  // Path flow animations enabled
+    gifSpeed: 1.0,      // GIF speed multiplier
     activeGifs: 0,
     selectedElement: null,
     draggedElement: null,
+    draggedIcon: null,
     dragOffset: { x: 0, y: 0 },
-    nextId: 1
+    nextId: 1,
+    favorites: [],      // Starred Iconify icons
+    currentTab: 'all',  // Iconify tab: all, animated, favorites
+    iconifyOpen: false  // Is Iconify sidebar open
   };
 
   // Elements
@@ -41,10 +59,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const statusText = document.getElementById('statusText');
   const statusBanner = document.getElementById('statusBanner');
   const gifToggle = document.getElementById('gifToggle');
+  const svgToggle = document.getElementById('svgToggle');
+  const flowToggle = document.getElementById('flowToggle');
   const gifCount = document.getElementById('gifCount');
   const engineStatus = document.getElementById('engineStatus');
-  
-  const flowToggle = document.getElementById('flowToggle');
   
   const canvasBoard = document.getElementById('canvasBoard');
   const canvasEmptyState = document.getElementById('canvasEmptyState');
@@ -63,9 +81,19 @@ document.addEventListener('DOMContentLoaded', () => {
   const demoBtn = document.getElementById('demoBtn');
   const themeToggle = document.getElementById('theme-toggle');
 
+  // New Iconify elements
+  const btnToggleIconify = document.getElementById('btnToggleIconify');
+  const simIconifyPanel = document.getElementById('simIconifyPanel');
+  const simIconifyClose = document.getElementById('simIconifyClose');
+  const simIconifySearch = document.getElementById('simIconifySearch');
+  const simIconifyGrid = document.getElementById('simIconifyGrid');
+  const simGifSpeedPills = document.getElementById('simGifSpeedPills');
+  const soundToggle = document.getElementById('sound-toggle');
+  const volumeSlider = document.getElementById('volume-slider');
+
   // SOUND HOOKS FOR STANDARD INTERACTION
   const addSoundHooks = () => {
-    document.querySelectorAll('button, a, .sample-item, .faq-item, .control-btn, .sim-toolbar-btn, .sim-pill-group button').forEach(el => {
+    document.querySelectorAll('button, a, .sample-item, .faq-item, .control-btn, .sim-toolbar-btn, .sim-pill-group button, .sim-iconify-tabs button, .sim-iconify-item').forEach(el => {
       if (!el.dataset.soundHooked) {
         el.dataset.soundHooked = 'true';
         el.addEventListener('mouseenter', () => playSelect());
@@ -96,6 +124,44 @@ document.addEventListener('DOMContentLoaded', () => {
 
   initTheme();
 
+  // SOUND EFFECTS MUTE & VOLUME TOGGLE
+  const initSound = () => {
+    const savedMute = localStorage.getItem('soundMuted') === 'true';
+    setMuted(savedMute);
+    if (soundToggle) {
+      soundToggle.textContent = savedMute ? "🔇 SOUND OFF" : "🔊 SOUND ON";
+    }
+    const savedVol = localStorage.getItem('soundVolume');
+    const initVol = savedVol !== null ? parseFloat(savedVol) : 50;
+    if (volumeSlider) {
+      volumeSlider.value = initVol;
+    }
+    setVolume(initVol / 100);
+  };
+
+  if (soundToggle) {
+    soundToggle.addEventListener('click', () => {
+      const currentlyMuted = getMuted();
+      const newMuted = !currentlyMuted;
+      setMuted(newMuted);
+      localStorage.setItem('soundMuted', newMuted);
+      soundToggle.textContent = newMuted ? "🔇 SOUND OFF" : "🔊 SOUND ON";
+      if (!newMuted) {
+        playToggle(true);
+      }
+    });
+  }
+
+  if (volumeSlider) {
+    volumeSlider.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      setVolume(val / 100);
+      localStorage.setItem('soundVolume', val);
+    });
+  }
+
+  initSound();
+
   // Selection change synchronizer
   const onSelectionChanged = () => {
     const elements = canvasBoard.querySelectorAll('.canvas-element');
@@ -116,32 +182,41 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.connected) {
       statusBanner.classList.add('connected');
       statusText.textContent = "Excalidraw Connected";
+      
       gifToggle.disabled = false;
       gifToggle.checked = state.enabled;
-      engineStatus.textContent = state.enabled ? "Running" : "Paused";
+      
+      svgToggle.disabled = false;
+      svgToggle.checked = state.svgEnabled;
       
       flowToggle.disabled = false;
       flowToggle.checked = state.flowEnabled;
+      
+      engineStatus.textContent = (state.enabled || state.svgEnabled || state.flowEnabled) ? "Running" : "Paused";
     } else {
       if (isLoading) {
         statusBanner.classList.add('loading');
         statusText.textContent = "Canvas Loading...";
-        gifToggle.disabled = true;
-        gifToggle.checked = false;
-        engineStatus.textContent = "-";
       } else {
         statusBanner.classList.add('disconnected');
         statusText.textContent = "Open excalidraw.com";
-        gifToggle.disabled = true;
-        gifToggle.checked = false;
-        engineStatus.textContent = "Inactive";
       }
+      
+      gifToggle.disabled = true;
+      gifToggle.checked = false;
+      
+      svgToggle.disabled = true;
+      svgToggle.checked = false;
       
       flowToggle.disabled = true;
       flowToggle.checked = false;
+      
+      engineStatus.textContent = isLoading ? "-" : "Inactive";
     }
 
-    // Update count display
+    // Update active media counts
+    const gifCountValue = canvasBoard.querySelectorAll('.canvas-element:not(.element-arrow):not(.element-svg)').length;
+    state.activeGifs = gifCountValue;
     gifCount.textContent = state.connected ? state.activeGifs : "0";
 
     // Toggle active classes on simulation controllers
@@ -169,7 +244,6 @@ document.addEventListener('DOMContentLoaded', () => {
       statusBanner.dataset.state = 'loading';
       playToggle(true); // Short blip
       
-      // Simulate loading done in 2 seconds automatically to satisfy interactive flow
       setTimeout(() => {
         if (statusBanner.dataset.state === 'loading') {
           setConnectionState('connected');
@@ -179,19 +253,37 @@ document.addEventListener('DOMContentLoaded', () => {
     updateSimulatorUI();
   };
 
-  // Toggle extension ON/OFF
+  // Toggle extension controls
   gifToggle.addEventListener('change', () => {
     state.enabled = gifToggle.checked;
     playToggle(state.enabled);
     updateSimulatorUI();
   });
 
-  // Toggle flow animations ON/OFF
+  svgToggle.addEventListener('change', () => {
+    state.svgEnabled = svgToggle.checked;
+    playToggle(state.svgEnabled);
+    updateSimulatorUI();
+  });
+
   flowToggle.addEventListener('change', () => {
     state.flowEnabled = flowToggle.checked;
     playToggle(state.flowEnabled);
     updateSimulatorUI();
   });
+
+  // GIF Speed pill handlers
+  if (simGifSpeedPills) {
+    simGifSpeedPills.querySelectorAll('button').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        playSelect();
+        state.gifSpeed = parseFloat(btn.dataset.val);
+        simGifSpeedPills.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === btn));
+        updateSimulatorUI();
+      });
+    });
+  }
 
   // Simulator State Controllers
   btnConnected.addEventListener('click', () => setConnectionState('connected'));
@@ -200,9 +292,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Header / Call To Actions click sounds
   installBtn.addEventListener('click', (e) => {
-    e.preventDefault();
     playSuccess();
-    alert("🌟 Excali Up Installed! (Simulated - follow installation steps below to load unpacked extension)");
   });
 
   demoBtn.addEventListener('click', (e) => {
@@ -214,7 +304,6 @@ document.addEventListener('DOMContentLoaded', () => {
   // Playground Board logic
   const checkEmptyState = () => {
     const items = canvasBoard.querySelectorAll('.canvas-element');
-    state.activeGifs = Array.from(items).filter(e => !e.classList.contains('element-arrow')).length;
     
     if (items.length === 0) {
       canvasEmptyState.style.display = 'flex';
@@ -224,9 +313,122 @@ document.addEventListener('DOMContentLoaded', () => {
     updateSimulatorUI();
   };
 
+  // SVG dynamic builder function
+  const renderArrowSVGContent = (el) => {
+    const isRunning = state.connected;
+    const isFlowActive = isRunning && state.flowEnabled && el.dataset.style;
+    const points = el.dataset.points;
+    const arrowheadPoints = el.dataset.arrowheadPoints;
+    const w = el.dataset.w;
+    const h = el.dataset.h;
+    const style = el.dataset.style;
+    const speed = el.dataset.speed || 'medium';
+    const direction = el.dataset.direction || 'forward';
+    
+    const size = parseInt(el.dataset.size || '3');
+    const spacing = parseInt(el.dataset.spacing || '50');
+    const glow = el.dataset.glow || 'none';
+    
+    const strokeWidth = size * 1.5;
+    const particleRadius = size * 1.8;
+    
+    // Calculate speed factor
+    let dur = '2s';
+    if (speed === 'slow') dur = '4s';
+    if (speed === 'fast') dur = '0.7s';
+    
+    let flowContent = '';
+    
+    if (isFlowActive) {
+      if (style === 'particles') {
+        const numParticles = Math.max(2, Math.min(10, Math.floor(200 / spacing)));
+        let circles = '';
+        for (let i = 0; i < numParticles; i++) {
+          const delay = (i * (parseFloat(dur) / numParticles)).toFixed(2) + 's';
+          circles += `
+            <circle r="${particleRadius}" fill="var(--color-primary)">
+              <animateMotion dur="${dur}" repeatCount="indefinite" path="${points}" begin="${delay}" keyPoints="${direction === 'reverse' ? '1;0' : '0;1'}" keyTimes="0;1" calcMode="linear" />
+            </circle>
+          `;
+        }
+        flowContent = `<g class="flow-particles ${glow !== 'none' ? 'glow-' + glow : ''}">${circles}</g>`;
+      } else if (style === 'dashes') {
+        const dashLen = size * 3.5;
+        const gapLen = size * 2.5;
+        const antsSpeed = speed === 'slow' ? '2.4s' : (speed === 'fast' ? '0.4s' : '1.2s');
+        const antsDir = direction === 'reverse' ? 'reverse' : 'normal';
+        flowContent = `
+          <path d="${points}" class="flow-arrow-line marching-ants" 
+                stroke="var(--color-primary)" stroke-width="${strokeWidth}" 
+                stroke-dasharray="${dashLen}, ${gapLen}" fill="none" 
+                style="animation-duration: ${antsSpeed}; animation-direction: ${antsDir};" />
+        `;
+      } else if (style === 'comet') {
+        let circles = '';
+        const delays = ['0s', '0.08s', '0.16s'];
+        const opacities = ['1.0', '0.6', '0.2'];
+        const scales = [1.0, 0.7, 0.4];
+        
+        for (let i = 0; i < 3; i++) {
+          let delay = delays[i];
+          if (direction === 'reverse') {
+            delay = delays[2 - i];
+          }
+          circles += `
+            <circle r="${particleRadius * scales[i]}" fill="var(--color-primary)" opacity="${opacities[i]}">
+              <animateMotion dur="${dur}" repeatCount="indefinite" path="${points}" begin="${delay}" keyPoints="${direction === 'reverse' ? '1;0' : '0;1'}" keyTimes="0;1" calcMode="linear" />
+            </circle>
+          `;
+        }
+        flowContent = `<g class="flow-comet ${glow !== 'none' ? 'glow-' + glow : ''}">${circles}</g>`;
+      } else if (style === 'snake') {
+        const snakeSpeed = speed === 'slow' ? '4s' : (speed === 'fast' ? '0.8s' : '2s');
+        const snakeDir = direction === 'reverse' ? 'reverse' : 'normal';
+        flowContent = `
+          <path d="${points}" class="flow-arrow-line flow-snake snake-animation" 
+                stroke="var(--color-primary)" stroke-width="${strokeWidth * 1.5}" 
+                stroke-dasharray="50, 150" fill="none" 
+                style="animation-duration: ${snakeSpeed}; animation-direction: ${snakeDir};" />
+        `;
+      } else if (style === 'pulse') {
+        const pulseSpeed = speed === 'slow' ? '3s' : (speed === 'fast' ? '0.6s' : '1.5s');
+        flowContent = `
+          <path d="${points}" class="flow-arrow-line pulse-animation" 
+                stroke="var(--color-primary)" stroke-width="${strokeWidth}" fill="none" 
+                style="animation-duration: ${pulseSpeed};" />
+        `;
+      } else if (style === 'ripple') {
+        const numRipples = Math.max(1, Math.min(3, Math.floor(100 / spacing)));
+        let ripples = '';
+        for (let i = 0; i < numRipples; i++) {
+          const delay = (i * (parseFloat(dur) / numRipples)).toFixed(2) + 's';
+          ripples += `
+            <circle r="4" fill="none" stroke="var(--color-primary)" stroke-width="2" class="ripple-circle">
+              <animateMotion dur="${dur}" repeatCount="indefinite" path="${points}" begin="${delay}" keyPoints="${direction === 'reverse' ? '1;0' : '0;1'}" keyTimes="0;1" calcMode="linear" />
+            </circle>
+          `;
+        }
+        flowContent = `<g class="${glow !== 'none' ? 'glow-' + glow : ''}">${ripples}</g>`;
+      }
+    }
+    
+    const glowClass = (isFlowActive && glow !== 'none') ? 'glow-' + glow : '';
+    
+    return `
+      <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+        <path d="${points}" class="flow-arrow-line ${glowClass}" stroke="var(--color-text-main)" stroke-width="${strokeWidth}" fill="none" />
+        ${flowContent}
+        <polygon points="${arrowheadPoints}" class="flow-arrow-head" fill="var(--color-text-main)" />
+      </svg>
+      <div class="el-label" style="background-color: ${isFlowActive ? 'var(--color-primary)' : 'var(--color-text-muted)'}">
+        ${isFlowActive ? `FLOW: ${style.toUpperCase()}` : 'STATIC LINE'}
+      </div>
+    `;
+  };
+
   // Update how elements render based on extension enabled/disabled state
   const updatePlaygroundAnimationState = () => {
-    const isRunning = state.connected && state.enabled;
+    const isRunning = state.connected;
     const elements = canvasBoard.querySelectorAll('.canvas-element');
     
     let animatedLineCount = 0;
@@ -235,71 +437,49 @@ document.addEventListener('DOMContentLoaded', () => {
       const img = el.querySelector('.el-img');
       const canvas = el.querySelector('.el-static-canvas');
       const label = el.querySelector('.el-label');
+      
       const isArrow = el.classList.contains('element-arrow');
+      const isSvg = el.classList.contains('element-svg');
       
       if (isArrow) {
-        const svg = el.querySelector('svg');
-        const style = el.dataset.style; // e.g., 'particles', 'dashes', or not set
-        const speed = el.dataset.speed || 'medium';
-        const direction = el.dataset.direction || 'forward';
+        // Redraw arrow based on state settings
+        el.innerHTML = renderArrowSVGContent(el);
         
+        const style = el.dataset.style;
         const isFlowActive = isRunning && state.flowEnabled && style;
         
         if (isFlowActive) {
           animatedLineCount++;
         }
-        
-        if (label) {
-          label.textContent = isFlowActive ? `FLOW: ${style.toUpperCase()}` : "STATIC LINE";
-          label.style.backgroundColor = isFlowActive ? "var(--color-primary)" : "var(--color-text-muted)";
-        }
-        
-        el.classList.toggle('style-particles', style === 'particles');
-        el.classList.toggle('style-dashes', style === 'dashes');
-        el.classList.toggle('static', !isFlowActive);
-        
-        const flowParticles = el.querySelector('.flow-particles');
-        const marchingAnts = el.querySelector('.marching-ants');
-        
-        if (flowParticles) {
-          flowParticles.style.display = (isFlowActive && style === 'particles') ? 'block' : 'none';
-        }
-        if (marchingAnts) {
-          marchingAnts.style.display = (isFlowActive && style === 'dashes') ? 'block' : 'none';
-        }
-        
-        // Update speed class/attributes
-        let dur = '2s';
-        if (speed === 'slow') dur = '4s';
-        if (speed === 'fast') dur = '0.7s';
-        
-        const anims = el.querySelectorAll('animateMotion');
-        anims.forEach(anim => {
-          anim.setAttribute('dur', dur);
-        });
-        
-        // Update marching dashes speed
-        if (marchingAnts) {
-          let animDuration = '1.2s';
-          if (speed === 'slow') animDuration = '2.4s';
-          if (speed === 'fast') animDuration = '0.4s';
-          marchingAnts.style.animationDuration = animDuration;
-          marchingAnts.style.animationDirection = direction === 'reverse' ? 'reverse' : 'normal';
-        }
+      } else if (isSvg) {
+        const svg = el.querySelector('svg');
+        const isSvgActive = isRunning && state.svgEnabled;
         
         if (svg) {
-          if (isFlowActive) {
+          if (isSvgActive) {
             svg.unpauseAnimations();
+            label.textContent = "SVG ACTIVE";
+            label.style.backgroundColor = "var(--color-primary)";
           } else {
             svg.pauseAnimations();
+            label.textContent = "SVG PAUSED";
+            label.style.backgroundColor = "var(--color-text-muted)";
           }
         }
       } else {
-        if (isRunning) {
+        // GIF element
+        const isGifActive = isRunning && state.enabled;
+        
+        if (isGifActive) {
           el.classList.remove('static');
           img.style.display = 'block';
           canvas.style.display = 'none';
-          label.textContent = "GIF ACTIVE";
+          
+          if (state.gifSpeed !== 1.0) {
+            label.textContent = `GIF ACTIVE (${state.gifSpeed}x)`;
+          } else {
+            label.textContent = "GIF ACTIVE";
+          }
           label.style.backgroundColor = "var(--color-success)";
         } else {
           el.classList.add('static');
@@ -308,7 +488,7 @@ document.addEventListener('DOMContentLoaded', () => {
           label.textContent = "STATIC FRAME";
           label.style.backgroundColor = "var(--color-text-muted)";
           
-          // Render first frame of GIF onto static canvas
+          // Render first frame onto canvas
           try {
             const ctx = canvas.getContext('2d');
             canvas.width = img.naturalWidth || 64;
@@ -327,7 +507,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
-  // Add a GIF element to the simulated Excalidraw board
+  // Add a GIF element to the simulated board
   const addGifToBoard = (gifSrc, name, posX = 100, posY = 100) => {
     const elId = `el-${state.nextId++}`;
     
@@ -337,20 +517,16 @@ document.addEventListener('DOMContentLoaded', () => {
     wrapper.style.left = `${posX}px`;
     wrapper.style.top = `${posY}px`;
 
-    // Create img element (playing state)
     const img = document.createElement('img');
-    img.src = gifSrc;
     img.className = 'el-img';
     img.alt = name;
     
-    // Create static canvas element (paused state)
     const canvas = document.createElement('canvas');
     canvas.className = 'el-static-canvas';
     canvas.style.display = 'none';
     canvas.width = 64;
     canvas.height = 64;
 
-    // Badge label
     const label = document.createElement('div');
     label.className = 'el-label';
     label.textContent = "GIF ACTIVE";
@@ -359,36 +535,69 @@ document.addEventListener('DOMContentLoaded', () => {
     wrapper.appendChild(canvas);
     wrapper.appendChild(label);
     
-    // Select the newly added element
     state.selectedElement = wrapper;
     onSelectionChanged();
 
-    // Mouse events for dragging
     wrapper.addEventListener('mousedown', (e) => {
       if (e.target.classList.contains('el-label')) return;
-      
       e.preventDefault();
       playSelect();
-      
       state.selectedElement = wrapper;
       onSelectionChanged();
-      
       state.draggedElement = wrapper;
       state.dragOffset.x = e.clientX - wrapper.offsetLeft;
       state.dragOffset.y = e.clientY - wrapper.offsetTop;
     });
 
-    // Generate static frame on load
     img.onload = () => {
       updatePlaygroundAnimationState();
     };
+    img.src = gifSrc;
 
     canvasBoard.appendChild(wrapper);
     playSuccess();
     checkEmptyState();
   };
 
-  // Add a Vector element to the simulated whiteboard
+  // Add an SVG element from Iconify
+  const addIconToBoard = (icon, posX = 120, posY = 120) => {
+    const elId = `el-${state.nextId++}`;
+    
+    const wrapper = document.createElement('div');
+    wrapper.className = 'canvas-element element-svg selected';
+    wrapper.id = elId;
+    wrapper.style.left = `${posX}px`;
+    wrapper.style.top = `${posY}px`;
+    wrapper.style.width = '64px';
+    wrapper.style.height = '64px';
+    
+    wrapper.innerHTML = `
+      <div class="el-svg-container" style="width:100%; height:100%; display:flex; justify-content:center; align-items:center;">
+        ${icon.svg}
+      </div>
+      <div class="el-label" style="background-color: var(--color-primary)">SVG ACTIVE</div>
+    `;
+    
+    state.selectedElement = wrapper;
+    onSelectionChanged();
+
+    wrapper.addEventListener('mousedown', (e) => {
+      if (e.target.classList.contains('el-label')) return;
+      e.preventDefault();
+      playSelect();
+      state.selectedElement = wrapper;
+      onSelectionChanged();
+      state.draggedElement = wrapper;
+      state.dragOffset.x = e.clientX - wrapper.offsetLeft;
+      state.dragOffset.y = e.clientY - wrapper.offsetTop;
+    });
+
+    canvasBoard.appendChild(wrapper);
+    playSuccess();
+    checkEmptyState();
+  };
+
+  // Add a Vector Arrow to the simulated board
   const addArrowToBoard = (points, arrowheadPoints, w, h, name, posX = 100, posY = 100) => {
     const elId = `el-${state.nextId++}`;
     
@@ -400,48 +609,30 @@ document.addEventListener('DOMContentLoaded', () => {
     wrapper.style.width = `${w}px`;
     wrapper.style.height = `${h}px`;
 
-    // Default to no animation (v2.0 behavior: style is blank until assigned)
+    // Save configurations in datasets
+    wrapper.dataset.points = points;
+    wrapper.dataset.arrowheadPoints = arrowheadPoints;
+    wrapper.dataset.w = w;
+    wrapper.dataset.h = h;
+    
     wrapper.dataset.style = '';
     wrapper.dataset.speed = 'medium';
     wrapper.dataset.direction = 'forward';
+    wrapper.dataset.size = '3';
+    wrapper.dataset.spacing = '50';
+    wrapper.dataset.glow = 'none';
 
-    wrapper.innerHTML = `
-      <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
-        <path d="${points}" class="flow-arrow-line" stroke="var(--color-text-main)" stroke-width="4" fill="none" />
-        <path d="${points}" class="flow-arrow-line marching-ants" stroke="var(--color-primary)" stroke-width="4" stroke-dasharray="10, 6" fill="none" style="display: none;" />
-        <g class="flow-particles" style="display: none;">
-          <circle r="5" fill="var(--color-primary)" filter="drop-shadow(0px 0px 3px var(--color-primary))">
-            <animateMotion dur="2s" repeatCount="indefinite" path="${points}" begin="0s" />
-          </circle>
-          <circle r="5" fill="var(--color-primary)" filter="drop-shadow(0px 0px 3px var(--color-primary))">
-            <animateMotion dur="2s" repeatCount="indefinite" path="${points}" begin="0.5s" />
-          </circle>
-          <circle r="5" fill="var(--color-primary)" filter="drop-shadow(0px 0px 3px var(--color-primary))">
-            <animateMotion dur="2s" repeatCount="indefinite" path="${points}" begin="1s" />
-          </circle>
-          <circle r="5" fill="var(--color-primary)" filter="drop-shadow(0px 0px 3px var(--color-primary))">
-            <animateMotion dur="2s" repeatCount="indefinite" path="${points}" begin="1.5s" />
-          </circle>
-        </g>
-        <polygon points="${arrowheadPoints}" class="flow-arrow-head" fill="var(--color-text-main)" />
-      </svg>
-      <div class="el-label" style="background-color: var(--color-text-muted)">STATIC LINE</div>
-    `;
-
-    // Select the newly added element
+    wrapper.innerHTML = renderArrowSVGContent(wrapper);
+    
     state.selectedElement = wrapper;
     onSelectionChanged();
 
-    // Mouse events for dragging
     wrapper.addEventListener('mousedown', (e) => {
       if (e.target.classList.contains('el-label')) return;
-      
       e.preventDefault();
       playSelect();
-      
       state.selectedElement = wrapper;
       onSelectionChanged();
-      
       state.draggedElement = wrapper;
       state.dragOffset.x = e.clientX - wrapper.offsetLeft;
       state.dragOffset.y = e.clientY - wrapper.offsetTop;
@@ -464,18 +655,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Select item samples triggers
   sampleHeart.addEventListener('click', () => {
-    const gifUrl = "https://static.klipy.com/ii/4493325008d34b7bf8cd6813cd5c1619/87/ad/71WOMbwke67fmBx.gif";
-    addGifToBoard(gifUrl, "Heart Pixel", 120, 100);
+    addGifToBoard("https://static.klipy.com/ii/4493325008d34b7bf8cd6813cd5c1619/87/ad/71WOMbwke67fmBx.gif", "Pixel Heart", 120, 100);
   });
 
   sampleCoin.addEventListener('click', () => {
-    const gifUrl = "https://static.klipy.com/ii/71b2873e478b9d8d0482ea3ec777ba7f/15/36/izQlaTmV.gif";
-    addGifToBoard(gifUrl, "Coin Spin", 260, 150);
+    addGifToBoard("https://static.klipy.com/ii/71b2873e478b9d8d0482ea3ec777ba7f/15/36/izQlaTmV.gif", "Retro Coin", 260, 150);
   });
 
   sampleGhost.addEventListener('click', () => {
-    const gifUrl = "https://static.klipy.com/ii/f87f46a2c5aeaeed4c68910815f73eaf/b2/8e/ubnyCmzy.gif";
-    addGifToBoard(gifUrl, "Ghost Pixel", 180, 80);
+    addGifToBoard("https://static.klipy.com/ii/f87f46a2c5aeaeed4c68910815f73eaf/b2/8e/ubnyCmzy.gif", "Mini Ghost", 180, 80);
   });
 
   // Select vector element triggers
@@ -513,6 +701,16 @@ document.addEventListener('DOMContentLoaded', () => {
     e.preventDefault();
     canvasBoard.style.borderColor = 'var(--color-border)';
     
+    // Check if dragging an Iconify icon
+    if (state.draggedIcon) {
+      const boardRect = canvasBoard.getBoundingClientRect();
+      const dropX = e.clientX - boardRect.left - 32;
+      const dropY = e.clientY - boardRect.top - 32;
+      addIconToBoard(state.draggedIcon, dropX, dropY);
+      state.draggedIcon = null;
+      return;
+    }
+    
     const files = e.dataTransfer.files;
     if (files.length > 0) {
       const file = files[0];
@@ -524,7 +722,7 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.readAsDataURL(file);
       } else {
         playError();
-        alert("⚠️ Please drop an animated GIF file (.gif) only!");
+        alert("⚠️ Please drop an animated GIF file (.gif) or drag an Iconify icon!");
       }
     }
   });
@@ -566,14 +764,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Delete key deletes selected elements
+  // Keyboard shortcut keys listener
   document.addEventListener('keydown', (e) => {
+    // Delete/Backspace keys
     if ((e.key === 'Delete' || e.key === 'Backspace') && state.selectedElement) {
       state.selectedElement.remove();
       state.selectedElement = null;
       onSelectionChanged();
       playError();
       checkEmptyState();
+    }
+    
+    // 'B' key to toggle Iconify panel (if not focused on inputs)
+    if (e.key.toLowerCase() === 'b' && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+      e.preventDefault();
+      toggleIconifyPanel();
     }
   });
 
@@ -601,7 +806,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!simToolbar) return;
     
     const el = state.selectedElement;
-    const isRunning = state.connected && state.enabled && state.flowEnabled;
+    const isRunning = state.connected && state.flowEnabled;
     
     if (el && el.classList.contains('element-arrow') && isRunning) {
       simToolbar.classList.add('visible');
@@ -623,11 +828,11 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       
       if (activeStyle) {
-        const speed = el.dataset.speed || 'medium';
-        const direction = el.dataset.direction || 'forward';
-        
-        updateSimPills('speed', speed);
-        updateSimPills('direction', direction);
+        updateSimPills('speed', el.dataset.speed || 'medium');
+        updateSimPills('direction', el.dataset.direction || 'forward');
+        updateSimPills('size', el.dataset.size || '3');
+        updateSimPills('spacing', el.dataset.spacing || '50');
+        updateSimPills('glow', el.dataset.glow || 'none');
       }
     } else {
       simToolbar.classList.remove('visible');
@@ -637,7 +842,13 @@ document.addEventListener('DOMContentLoaded', () => {
   };
   
   const updateSimPills = (settingKey, val) => {
-    const id = settingKey === 'speed' ? 'simSpeedPills' : 'simDirPills';
+    let id = '';
+    if (settingKey === 'speed') id = 'simSpeedPills';
+    else if (settingKey === 'direction') id = 'simDirPills';
+    else if (settingKey === 'size') id = 'simSizePills';
+    else if (settingKey === 'spacing') id = 'simSpacingPills';
+    else if (settingKey === 'glow') id = 'simGlowPills';
+    
     const group = document.getElementById(id);
     if (!group) return;
     const buttons = group.querySelectorAll('button');
@@ -665,6 +876,9 @@ document.addEventListener('DOMContentLoaded', () => {
         el.dataset.style = targetStyle;
         if (!el.dataset.speed) el.dataset.speed = 'medium';
         if (!el.dataset.direction) el.dataset.direction = 'forward';
+        if (!el.dataset.size) el.dataset.size = '3';
+        if (!el.dataset.spacing) el.dataset.spacing = '50';
+        if (!el.dataset.glow) el.dataset.glow = 'none';
       }
       
       updatePlaygroundAnimationState();
@@ -698,7 +912,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  document.querySelectorAll('.sim-pill-group button').forEach(btn => {
+  // Listeners for collapsible settings pills
+  document.querySelectorAll('.sim-toolbar-panel .sim-pill-group button').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       e.preventDefault();
@@ -708,14 +923,136 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!el) return;
       
       const parent = btn.parentElement;
-      const isSpeed = parent.id === 'simSpeedPills';
-      const key = isSpeed ? 'speed' : 'direction';
+      let key = '';
+      if (parent.id === 'simSpeedPills') key = 'speed';
+      else if (parent.id === 'simDirPills') key = 'direction';
+      else if (parent.id === 'simSizePills') key = 'size';
+      else if (parent.id === 'simSpacingPills') key = 'spacing';
+      else if (parent.id === 'simGlowPills') key = 'glow';
       
-      el.dataset[key] = btn.dataset.val;
-      updatePlaygroundAnimationState();
-      onSelectionChanged();
+      if (key) {
+        el.dataset[key] = btn.dataset.val;
+        updatePlaygroundAnimationState();
+        onSelectionChanged();
+      }
     });
   });
+
+  // Toggle Iconify Sidebar Panel
+  const toggleIconifyPanel = () => {
+    state.iconifyOpen = !state.iconifyOpen;
+    playToggle(state.iconifyOpen);
+    if (state.iconifyOpen) {
+      simIconifyPanel.classList.add('visible');
+      renderIconifyGrid();
+    } else {
+      simIconifyPanel.classList.remove('visible');
+    }
+  };
+
+  btnToggleIconify.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleIconifyPanel();
+  });
+
+  simIconifyClose.addEventListener('click', (e) => {
+    e.stopPropagation();
+    state.iconifyOpen = false;
+    simIconifyPanel.classList.remove('visible');
+    playToggle(false);
+  });
+
+  // Iconify search filters
+  simIconifySearch.addEventListener('input', () => {
+    renderIconifyGrid();
+  });
+
+  // Iconify Tabs switching
+  simIconifyPanel.querySelectorAll('.sim-iconify-tabs button').forEach(tabBtn => {
+    tabBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      playSelect();
+      state.currentTab = tabBtn.dataset.tab;
+      simIconifyPanel.querySelectorAll('.sim-iconify-tabs button').forEach(b => b.classList.toggle('active', b === tabBtn));
+      renderIconifyGrid();
+    });
+  });
+
+  // Render Iconify sidebar icons dynamically
+  const renderIconifyGrid = () => {
+    simIconifyGrid.innerHTML = '';
+    const query = simIconifySearch.value.toLowerCase().trim();
+    
+    const filtered = ICONIFY_ICONS.filter(icon => {
+      // Tab filter
+      if (state.currentTab === 'animated' && icon.category !== 'animated') return false;
+      if (state.currentTab === 'favorites' && !state.favorites.includes(icon.name)) return false;
+      
+      // Query filter
+      if (query && !icon.name.toLowerCase().includes(query)) return false;
+      
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      simIconifyGrid.innerHTML = `<div style="grid-column: span 3; text-align: center; font-size: 0.75rem; color: var(--color-text-muted); padding-top: 20px;">No icons found</div>`;
+      return;
+    }
+
+    filtered.forEach(icon => {
+      const item = document.createElement('div');
+      item.className = 'sim-iconify-item';
+      item.title = `Click to paste or drag onto board`;
+      
+      // Star favorite toggler
+      const isFav = state.favorites.includes(icon.name);
+      const star = document.createElement('span');
+      star.className = `sim-iconify-item-star ${isFav ? 'active' : ''}`;
+      star.innerHTML = '★';
+      star.title = isFav ? 'Remove from Favorites' : 'Add to Favorites';
+      
+      star.addEventListener('click', (e) => {
+        e.stopPropagation();
+        playToggle(true);
+        if (state.favorites.includes(icon.name)) {
+          state.favorites = state.favorites.filter(n => n !== icon.name);
+        } else {
+          state.favorites.push(icon.name);
+        }
+        renderIconifyGrid();
+      });
+
+      const iconContainer = document.createElement('div');
+      iconContainer.style.width = '24px';
+      iconContainer.style.height = '24px';
+      iconContainer.innerHTML = icon.svg;
+
+      const label = document.createElement('span');
+      label.className = 'sim-iconify-item-label';
+      label.textContent = icon.name.replace('Lucide ', '').replace('SVG ', '');
+
+      item.appendChild(star);
+      item.appendChild(iconContainer);
+      item.appendChild(label);
+
+      // Support clicking to paste
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        addIconToBoard(icon);
+      });
+
+      // Support drag & drop
+      item.draggable = true;
+      item.addEventListener('dragstart', (e) => {
+        state.draggedIcon = icon;
+        playSelect();
+      });
+
+      simIconifyGrid.appendChild(item);
+    });
+
+    addSoundHooks();
+  };
 
   // Init UI
   updateSimulatorUI();

@@ -27,6 +27,11 @@
         <a href="#faq" class="nav-link">FAQ</a>
         <a href="https://gifs.astrofocus.app/" target="_blank" class="nav-link" style="color: var(--color-primary); font-weight: bold;">AstroFocus GIFs 🚀</a>
       </div>
+      <button class="nav-btn secondary" id="sound-toggle" style="margin-right: 10px;" aria-label="Toggle sound effects">🔊 SOUND ON</button>
+      <div id="volume-control" style="display: inline-flex; align-items: center; gap: 8px; margin-right: 10px; background: var(--color-card-bg); border: 2px solid var(--color-border); padding: 4px 10px; box-shadow: 2px 2px 0px var(--color-shadow); height: 35px; vertical-align: middle;">
+        <span style="font-family: var(--font-retro); font-size: 1.2rem; color: var(--color-text-main); line-height: 1; user-select: none;">VOL</span>
+        <input type="range" id="volume-slider" min="0" max="100" value="50" style="width: 60px; accent-color: var(--color-primary); cursor: pointer; height: 8px;">
+      </div>
       <button class="nav-btn secondary" id="theme-toggle" style="margin-right: 10px;" aria-label="Toggle dark/light mode">🌙 DARK MODE</button>
       <a href="https://github.com/klysman08/ExcaliGif" target="_blank" class="nav-btn" id="github-link">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="display:inline; vertical-align:middle;">
@@ -41,15 +46,15 @@
   <main class="container">
     <section class="hero" aria-labelledby="hero-title">
       <div class="hero-content">
-        <span class="pixel-badge" style="margin-bottom:15px;">v3.0.0 RELEASE</span>
+        <span class="pixel-badge" style="margin-bottom:15px;">v4.0.0 RELEASE</span>
         <h1 id="hero-title">Animate Your<br><span style="color:var(--color-primary)">Whiteboards</span></h1>
         <p class="hero-subtitle">
           Enables animated GIF files, customizable path motion flows, and the complete Iconify open-source icon library directly inside your Excalidraw whiteboard canvas.
         </p>
         <div class="hero-buttons">
-          <button class="btn-retro primary" id="installBtn" aria-label="Install Extension Button">
+          <a href="https://chromewebstore.google.com/detail/kkdemmcbedpinbabaddejkdgkmabbbbm" target="_blank" class="btn-retro primary" id="installBtn" aria-label="Install Extension Button" style="color: white; text-decoration: none;">
             ⚡ INSTALL EXTENSION
-          </button>
+          </a>
           <button class="btn-retro secondary" id="demoBtn" aria-label="Try Interactive Demo Button">
             🎮 TRY LIVE DEMO
           </button>
@@ -95,26 +100,26 @@
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px;">
         <!-- Card 1 -->
         <div class="pixel-card interactive" style="margin-bottom: 0;">
-          <span class="pixel-badge success" style="margin-bottom: 15px;">v3.0 FEATURE</span>
+          <span class="pixel-badge success" style="margin-bottom: 15px;">v4.0 FEATURE</span>
           <h3 style="font-family: var(--font-retro); font-size: 1.6rem; color: var(--color-primary); margin-bottom: 10px;">🎨 Complete Iconify Library</h3>
           <p style="font-size: 0.95rem; margin: 0;">
-            Search more than 300,000 icons across hundreds of packs. Filter by pack, category, or tag—including a dedicated Animated SVG category—save favorites, then drag an icon to the canvas or click to paste it with optional native animation playback.
+            Browse 200+ collections (Lucide, Tabler, Material, Phosphor, Font Awesome) directly via a glassmorphic sidebar panel. Star favorite icons, filter by collections or category (including native Animated SVGs), search instantly across 300,000+ icons, and drag-and-drop or click to paste SVGs. Open/close with the <b>B</b> shortcut.
           </p>
         </div>
         <!-- Card 2 -->
         <div class="pixel-card interactive" style="margin-bottom: 0;">
-          <span class="pixel-badge" style="margin-bottom: 15px; background: var(--color-info); color: white;">6 MOTION STYLES</span>
+          <span class="pixel-badge" style="margin-bottom: 15px; background: var(--color-info); color: white;">10 MOTION STYLES</span>
           <h3 style="font-family: var(--font-retro); font-size: 1.6rem; color: var(--color-primary); margin-bottom: 10px;">🌊 Line & Arrow Flows</h3>
           <p style="font-size: 0.95rem; margin: 0;">
-            Tether customizable flows along arrows and drawn lines. Pick from Particles, Marching Ants, Gradient Pulse, Ripple Wave, Packet Train, and Snake Trail. Tune speed, direction (forward, reverse, bounce), spacing, size, and glow.
+            Animate flows along paths and arrows on-demand. Choose from 10 motion styles: Particles, Marching Ants, Gradient Pulse, Ripple Wave, Packet Train, Snake Trail, Comet, Electricity, Wave, and Dual Flow. Fine-tune speed, direction, element size (1-5), spacing (20px-120px), and glow levels (None to Strong).
           </p>
         </div>
         <!-- Card 3 -->
         <div class="pixel-card interactive" style="margin-bottom: 0;">
           <span class="pixel-badge" style="margin-bottom: 15px;">NATIVE PLAYBACK</span>
-          <h3 style="font-family: var(--font-retro); font-size: 1.6rem; color: var(--color-primary); margin-bottom: 10px;">👾 Real-time GIF Engine</h3>
+          <h3 style="font-family: var(--font-retro); font-size: 1.6rem; color: var(--color-primary); margin-bottom: 10px;">👾 Real-time Playback</h3>
           <p style="font-size: 0.95rem; margin: 0;">
-            Drag and drop animated GIF files to see them loop directly on the canvas. Uses a lightweight zero-dependency frame-by-frame decoder to intercept Excalidraw's React Fiber image cache and swap static frames with dynamic canvas animations.
+            Watch GIFs loop directly on your board and run native SVG animations (SMIL/CSS). Independent playback switches in the extension popup dashboard let you turn GIF and SVG rendering on/off separately, with customizable speed multipliers (0.5x, 1x, 1.5x, 2x) for GIFs.
           </p>
         </div>
       </div>
@@ -132,11 +137,31 @@
         <div class="playground-canvas-area">
           <div class="canvas-toolbar">
             <span class="toolbar-title">🎨 Excalidraw Simulated Canvas</span>
+            <button class="toolbar-btn" id="btnToggleIconify" style="margin-right: 5px;" title="Toggle Iconify Library (shortcut: B)">🔍 ICONIFY (B)</button>
             <button class="toolbar-btn" id="btnClearCanvas" title="Clear whiteboard elements">🧹 CLEAR BOARD</button>
           </div>
           
           <div class="canvas-board" id="canvasBoard">
             <div class="canvas-grid-bg"></div>
+            
+            <!-- Simulated Iconify Sidebar -->
+            <div class="sim-iconify-panel" id="simIconifyPanel">
+              <div class="sim-iconify-header">
+                <span>Iconify Library</span>
+                <button class="sim-iconify-close" id="simIconifyClose" title="Close Panel">✕</button>
+              </div>
+              <div class="sim-iconify-search-box">
+                <input type="text" id="simIconifySearch" placeholder="Search 300,000+ icons...">
+              </div>
+              <div class="sim-iconify-tabs">
+                <button class="active" data-tab="all">All Packs</button>
+                <button data-tab="animated">Animated</button>
+                <button data-tab="favorites">Favorites</button>
+              </div>
+              <div class="sim-iconify-grid" id="simIconifyGrid">
+                <!-- Dynamically populated icons in app.js -->
+              </div>
+            </div>
             
             <!-- Empty Canvas State -->
             <div class="canvas-empty-state" id="canvasEmptyState">
@@ -165,6 +190,34 @@
                     <button data-val="bounce">↔ Bnc</button>
                   </div>
                 </div>
+                <div class="sim-panel-row">
+                  <span>Size</span>
+                  <div class="sim-pill-group" id="simSizePills">
+                    <button class="active" data-val="1">1</button>
+                    <button data-val="2">2</button>
+                    <button data-val="3">3</button>
+                    <button data-val="4">4</button>
+                    <button data-val="5">5</button>
+                  </div>
+                </div>
+                <div class="sim-panel-row">
+                  <span>Spacing</span>
+                  <div class="sim-pill-group" id="simSpacingPills">
+                    <button class="active" data-val="20">20</button>
+                    <button data-val="50">50</button>
+                    <button data-val="80">80</button>
+                    <button data-val="120">120</button>
+                  </div>
+                </div>
+                <div class="sim-panel-row">
+                  <span>Glow</span>
+                  <div class="sim-pill-group" id="simGlowPills">
+                    <button class="active" data-val="none">None</button>
+                    <button data-val="subtle">Subtle</button>
+                    <button data-val="medium">Med</button>
+                    <button data-val="strong">Strong</button>
+                  </div>
+                </div>
               </div>
               
               <!-- Main Toolbar Bar -->
@@ -173,6 +226,10 @@
                 <div class="sim-toolbar-divider"></div>
                 <button class="sim-toolbar-btn active" data-style="particles" title="Particles style">● Particles</button>
                 <button class="sim-toolbar-btn" data-style="dashes" title="Marching Ants style">⋯ Ants</button>
+                <button class="sim-toolbar-btn" data-style="comet" title="Comet style">☄️ Comet</button>
+                <button class="sim-toolbar-btn" data-style="snake" title="Snake Trail style">🐍 Snake</button>
+                <button class="sim-toolbar-btn" data-style="pulse" title="Gradient Pulse style">✨ Pulse</button>
+                <button class="sim-toolbar-btn" data-style="ripple" title="Ripple Wave style">🌊 Ripple</button>
                 <div class="sim-toolbar-divider"></div>
                 <button class="sim-toolbar-btn gear" id="simGearBtn" title="Tune Settings">⚙️</button>
                 <button class="sim-toolbar-btn remove" id="simRemoveBtn" title="Remove animation">✕</button>
@@ -189,7 +246,7 @@
                 <div class="sim-logo">
                   <span class="sim-logo-bold">Excali</span><span class="sim-logo-light">Up</span>
                 </div>
-                <div class="sim-version">v3.0.0</div>
+                <div class="sim-version">v4.0.0</div>
               </header>
 
               <!-- Connection Status Banner -->
@@ -199,12 +256,13 @@
               </div>
 
               <!-- Main Controller Card -->
-              <div class="sim-content">
-                <div class="sim-card">
+              <div class="sim-content" style="padding: 10px; gap: 8px;">
+                <!-- GIF Card with speed selector -->
+                <div class="sim-card" style="padding: 8px 10px;">
                   <div class="sim-row">
                     <div>
-                      <h4 class="sim-title">GIF Animations</h4>
-                      <p class="sim-desc" style="margin:0;">Enable rendering loops for canvas GIFs</p>
+                      <h4 class="sim-title" style="font-size: 1.1rem;">GIF Animations</h4>
+                      <p class="sim-desc" style="margin:0; font-size: 0.65rem;">Loop playback for canvas GIFs</p>
                     </div>
                     <div>
                       <label class="sim-switch">
@@ -213,14 +271,39 @@
                       </label>
                     </div>
                   </div>
+                  <div class="sim-row" style="margin-top: 6px; border-top: 1px dashed var(--color-grid-line); padding-top: 6px;">
+                    <span class="sim-desc" style="font-size: 0.65rem; font-weight: bold;">Speed Multiplier:</span>
+                    <div class="sim-pill-group" id="simGifSpeedPills" style="max-width: 130px; border-radius: 4px; padding: 0px;">
+                      <button data-val="0.5" style="font-size: 0.55rem; padding: 1px 2px;">0.5x</button>
+                      <button class="active" data-val="1.0" style="font-size: 0.55rem; padding: 1px 2px;">1x</button>
+                      <button data-val="1.5" style="font-size: 0.55rem; padding: 1px 2px;">1.5x</button>
+                      <button data-val="2.0" style="font-size: 0.55rem; padding: 1px 2px;">2x</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- SVG Animations Card -->
+                <div class="sim-card" style="padding: 8px 10px;">
+                  <div class="sim-row">
+                    <div>
+                      <h4 class="sim-title" style="font-size: 1.1rem;">SVG Playback</h4>
+                      <p class="sim-desc" style="margin:0; font-size: 0.65rem;">Native loops for animated SVGs</p>
+                    </div>
+                    <div>
+                      <label class="sim-switch">
+                        <input type="checkbox" id="svgToggle" checked>
+                        <span class="sim-slider"></span>
+                      </label>
+                    </div>
+                  </div>
                 </div>
 
                 <!-- Flow Animations Card -->
-                <div class="sim-card">
+                <div class="sim-card" style="padding: 8px 10px;">
                   <div class="sim-row">
                     <div>
-                      <h4 class="sim-title">Line & Arrow Flow</h4>
-                      <p class="sim-desc" style="margin:0;">Animate information flow along paths</p>
+                      <h4 class="sim-title" style="font-size: 1.1rem;">Flow Animations</h4>
+                      <p class="sim-desc" style="margin:0; font-size: 0.65rem;">Flow motion effects along paths</p>
                     </div>
                     <div>
                       <label class="sim-switch">

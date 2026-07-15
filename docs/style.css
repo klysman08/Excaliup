@@ -639,7 +639,7 @@ a:hover {
   font-family: var(--font-body);
   display: flex;
   flex-direction: column;
-  height: 380px;
+  height: 440px;
   position: relative;
 }
 
@@ -1325,3 +1325,233 @@ input:disabled + .sim-slider {
 }
 
 
+
+/* --- Version 4.0.0 Updates --- */
+
+/* Iconify Library Sidebar Panel */
+.sim-iconify-panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 200px;
+  height: 100%;
+  background-color: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(8px);
+  border-right: 3px solid var(--color-border);
+  z-index: 150;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(-100%);
+  transition: transform 0.25s cubic-bezier(0.1, 0.9, 0.2, 1);
+  user-select: none;
+}
+
+body.dark-mode .sim-iconify-panel {
+  background-color: rgba(35, 34, 33, 0.95);
+  border-right-color: var(--color-border);
+}
+
+.sim-iconify-panel.visible {
+  transform: translateX(0);
+}
+
+.sim-iconify-header {
+  padding: 8px 10px;
+  background-color: var(--color-border);
+  color: white;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-retro);
+  font-size: 1.1rem;
+}
+
+.sim-iconify-close {
+  background: none;
+  border: none;
+  color: white;
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.sim-iconify-close:hover {
+  color: var(--color-secondary);
+}
+
+.sim-iconify-search-box {
+  padding: 6px;
+  border-bottom: 2px solid var(--color-border);
+}
+
+.sim-iconify-search-box input {
+  width: 100%;
+  padding: 4px 6px;
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  border: 2px solid var(--color-border);
+  background-color: var(--color-bg);
+  color: var(--color-text-main);
+  outline: none;
+}
+
+.sim-iconify-tabs {
+  display: flex;
+  border-bottom: 2px solid var(--color-border);
+  background-color: var(--color-bg);
+}
+
+.sim-iconify-tabs button {
+  flex: 1;
+  background: none;
+  border: none;
+  border-right: 1px solid var(--color-border);
+  padding: 4px 2px;
+  font-family: var(--font-retro);
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: var(--color-text-muted);
+}
+
+.sim-iconify-tabs button:last-child {
+  border-right: none;
+}
+
+.sim-iconify-tabs button.active {
+  background-color: var(--color-primary);
+  color: white;
+}
+
+.sim-iconify-grid {
+  flex-grow: 1;
+  padding: 8px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  overflow-y: auto;
+  align-content: start;
+}
+
+.sim-iconify-item {
+  border: 2px solid var(--color-border);
+  border-radius: 4px;
+  background-color: var(--color-card-bg);
+  aspect-ratio: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  cursor: grab;
+  position: relative;
+  transition: transform 0.1s, box-shadow 0.1s;
+  padding: 4px;
+}
+
+.sim-iconify-item:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 2px 2px 0 var(--color-border);
+  border-color: var(--color-primary);
+}
+
+.sim-iconify-item svg {
+  width: 24px;
+  height: 24px;
+  color: var(--color-text-main);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+}
+
+.sim-iconify-item-star {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  font-size: 0.75rem;
+  color: #ccc;
+  cursor: pointer;
+  z-index: 10;
+  transition: color 0.1s;
+}
+
+.sim-iconify-item-star.active {
+  color: #e2b13c;
+}
+
+.sim-iconify-item-label {
+  font-size: 0.5rem;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
+/* Custom styling for new motion styles in SVG */
+.flow-comet circle {
+  transform-box: fill-box;
+}
+
+.flow-snake {
+  stroke-linecap: round;
+}
+
+/* CSS keyframes for new styles */
+@keyframes simSnakeFlow {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -200;
+  }
+}
+
+.snake-animation {
+  animation: simSnakeFlow 2s linear infinite;
+}
+
+@keyframes simPulseFlow {
+  0% {
+    stroke-width: 2px;
+    opacity: 0.4;
+  }
+  50% {
+    stroke-width: 8px;
+    opacity: 1;
+  }
+  100% {
+    stroke-width: 2px;
+    opacity: 0.4;
+  }
+}
+
+.pulse-animation {
+  animation: simPulseFlow 1.5s ease-in-out infinite;
+}
+
+@keyframes simRippleFlow {
+  0% {
+    r: 2px;
+    opacity: 1;
+  }
+  100% {
+    r: 18px;
+    opacity: 0;
+  }
+}
+
+.ripple-circle {
+  animation: simRippleFlow 2s cubic-bezier(0.1, 0.8, 0.3, 1) infinite;
+}
+
+/* Support for Glow Intensity filters */
+.glow-subtle {
+  filter: drop-shadow(0 0 3px var(--color-primary));
+}
+.glow-medium {
+  filter: drop-shadow(0 0 6px var(--color-primary));
+}
+.glow-strong {
+  filter: drop-shadow(0 0 10px var(--color-primary)) drop-shadow(0 0 3px var(--color-primary));
+}
