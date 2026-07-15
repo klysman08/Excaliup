@@ -45,8 +45,8 @@ def package_extension():
         "icons/icon16.png",
         "icons/icon48.png",
         "icons/icon128.png",
-        "icons_metadata.json",
-        "lucide_metadata.json",
+        "vendor/iconify-icon.min.js",
+        "vendor/iconify-icon.LICENSE.txt",
     ]
     
     print(f"Creating package: {zip_filepath}...")

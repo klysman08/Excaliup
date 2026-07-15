@@ -1,21 +1,21 @@
 # Excali Up
 
-> **Per-Element Animated GIF, Custom Motion Flows, and Material Icons for Excalidraw**
+> **Per-Element Animated GIF, Custom Motion Flows, and the Iconify Library for Excalidraw**
 
-**Excali Up** is a feature-rich browser extension that brings your Excalidraw canvas to life. It provides full real-time playback for animated GIF files, a selective in-canvas floating toolbar that lets you choose exactly which lines or arrows to animate, and a sidebar library to browse and import Google Material Icons and symbols.
+**Excali Up** is a feature-rich browser extension that brings your Excalidraw canvas to life. It provides full real-time playback for animated GIF files, a selective in-canvas floating toolbar that lets you choose exactly which lines or arrows to animate, and an Iconify-powered sidebar for browsing hundreds of open-source icon packs.
 
 ---
 
 ## Features
 
-### 1. Google Material Icons and Symbols Integration (New in v3.0)
-Access thousands of Google Material Icons and Material Symbols directly inside Excalidraw via a dedicated, glassmorphic toggle sidebar panel:
-* **Rich sets and styles**: Access both legacy Material Icons (Filled, Outlined, Rounded, Sharp, Two-Tone) and modern Material Symbols (Outlined, Rounded, Sharp) sets.
+### 1. Complete Iconify Library Integration (New in v3.0)
+Search and browse Iconify's open-source icon sets directly inside Excalidraw via a dedicated, glassmorphic toggle sidebar panel:
+* **All available packs**: Browse more than 200 collections, including Material, Lucide, Tabler, Phosphor, Font Awesome, logos, emoji, and thematic sets.
+* **Library filters**: Narrow packs by collection category and tags such as animated, stroke, precise shapes, and padding.
 * **Pagination system**: Renders 96 items per page to prevent browser rendering bottlenecks and keep canvas performance high.
 * **Clean SVG click-to-copy**: Copying an icon fetches its clean vector SVG directly, automatically converting hardcoded fills to current colors for theme compatibility, and pastes it onto the active canvas.
 * **Drag-and-drop support**: Drag any icon directly from the sidebar grid and drop it exactly at your cursor position on the Excalidraw canvas.
-* **Search and categories**: Search through 4,219 icons by name or keywords, or filter by one of the 25 normalized categories.
-* **Keyboard navigation**: Cycle through categories instantly using the Left and Right Arrow keys.
+* **Global search**: Search across more than 300,000 icons, or search within one selected pack.
 * **Dynamic theme matching**: The sidebar automatically transitions between light and dark modes to synchronize with Excalidraw's theme state.
 
 ### 2. In-Canvas Tuning Toolbar
@@ -69,7 +69,7 @@ Excali Up injects a script into the page context (MAIN world) to access the unde
 4. **Active Canvas Swap**: The static `HTMLImageElement` in Excalidraw's cache is replaced with a single dynamic `HTMLCanvasElement` managed by the extension.
 5. **Floating Toolbar & Canvas Overlay**: The extension overlays a secondary canvas aligned with the interactive canvas. Selecting an element triggers the DOM injection of the floating toolbar panel. Real-time offsets are recalculated per frame on the overlay.
 6. **State Persistence**: Element settings (style, speed, size, spacing, glow, direction) are mapped to element IDs and persisted in `localStorage`. They are automatically loaded when refreshing the page. Deleted elements are cleaned up from the store.
-7. **Isolated World Metadata Bridge**: The content script reads `icons_metadata.json` on-demand using Chrome APIs when triggered by `ExcaliGifGetIconsData` and responds to the MAIN world via DOM events.
+7. **Iconify Icon Library**: A locally packaged Iconify web component renders previews, while Iconify's collection, search, and SVG APIs provide pack metadata, filtered results, and clean vectors for copy and drag operations.
 
 ---
 

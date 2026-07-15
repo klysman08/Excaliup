@@ -14,20 +14,23 @@
   const activeGifs = new Map(); // fileId -> GifPlayer instance
   const currentSettings = { ...Core.DEFAULT_SETTINGS };
 
-  // Material Icons Sidebar State
+  // Iconify sidebar state
   let sidebarElement = null;
   let sidebarButton = null;
   let isDraggingIcon = false;
   let draggingIconData = null;
-  let iconsData = null;
-  let lucideData = null;
-  let activeSet = 'symbols'; // 'symbols' | 'icons' | 'lucide'
-  let activeStyle = 'outlined'; // 'outlined' | 'rounded' | 'sharp' | 'filled' | 'round' | 'two-tone'
-  let activeCategory = 'All';
+  let iconCollections = null;
+  let visibleIcons = [];
+  let activePrefix = '';
+  let activeCategory = '';
+  let activeTag = '';
   let searchQuery = '';
   let currentPage = 1;
   const pageSize = 96;
   const svgCache = new Map();
+  let iconSearchTimer = null;
+  let iconRequestId = 0;
+  let iconCollectionsPromise = null;
 
   let overlayAnimationFrameId = null;
   let gifSchedulerTimer = null;
@@ -2075,49 +2078,20 @@
   });
 
   // ═══════════════════════════════════════════════
-  // GOOGLE MATERIAL ICONS & SYMBOLS INTEGRATION
+  // ICONIFY MATERIAL ICONS & LUCIDE INTEGRATION
   // ═══════════════════════════════════════════════
-
-  function injectMaterialFonts() {
-    if (document.getElementById('excaligif-material-fonts')) return;
-    const link = document.createElement('link');
-    link.id = 'excaligif-material-fonts';
-    link.rel = 'stylesheet';
-    link.href = 'https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&family=Material+Symbols+Sharp:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&family=Material+Icons&family=Material+Icons+Outlined&family=Material+Icons+Round&family=Material+Icons+Sharp&family=Material+Icons+Two+Tone&display=block';
-    document.head.appendChild(link);
-  }
-
-  function injectLucideFonts() {
-    if (document.getElementById('excaligif-lucide-fonts')) return;
-    const link = document.createElement('link');
-    link.id = 'excaligif-lucide-fonts';
-    link.rel = 'stylesheet';
-    link.href = 'https://cdn.jsdelivr.net/npm/lucide-static@0.473.0/font/lucide.css';
-    document.head.appendChild(link);
-  }
 
   function injectSidebarStyles() {
     if (document.getElementById('excaligif-sidebar-styles')) return;
     const style = document.createElement('style');
     style.id = 'excaligif-sidebar-styles';
     style.textContent = `
-      /* Font Family Specificity Overrides */
-      .material-symbols-outlined { font-family: 'Material Symbols Outlined' !important; }
-      .material-symbols-rounded { font-family: 'Material Symbols Rounded' !important; }
-      .material-symbols-sharp { font-family: 'Material Symbols Sharp' !important; }
-      .material-icons { font-family: 'Material Icons' !important; }
-      .material-icons-outlined { font-family: 'Material Icons Outlined' !important; }
-      .material-icons-round { font-family: 'Material Icons Round' !important; }
-      .material-icons-sharp { font-family: 'Material Icons Sharp' !important; }
-      .material-icons-two-tone { font-family: 'Material Icons Two Tone' !important; }
-
-      /* Web Fonts Loading display */
-      .excaligif-icon-card span.excaligif-icon-glyph {
+      .excaligif-icon-card .excaligif-icon-glyph {
         font-size: 28px;
         margin-bottom: 4px;
         color: rgba(255, 255, 255, 0.85);
         transition: transform 0.22s cubic-bezier(0.25, 0.8, 0.25, 1), color 0.22s ease;
-        display: inline-block;
+        display: inline-flex;
         line-height: 1;
         text-transform: none;
         letter-spacing: normal;
@@ -2127,7 +2101,6 @@
         -webkit-font-smoothing: antialiased;
         text-rendering: optimizeLegibility;
         -moz-osx-font-smoothing: grayscale;
-        font-feature-settings: 'liga';
       }
 
       /* Sidebar button (Dark Mode / Default) */
@@ -2152,7 +2125,7 @@
         -webkit-backdrop-filter: blur(8px);
         outline: none;
       }
-      .excaligif-icons-btn span {
+      .excaligif-icons-btn iconify-icon {
         font-size: 22px;
       }
       .excaligif-icons-btn:hover {
@@ -2252,6 +2225,44 @@
         flex-direction: column;
         gap: 12px;
         border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      }
+
+      .excaligif-icons-filters {
+        display: grid;
+        grid-template-columns: 1.5fr 1fr 1fr;
+        gap: 8px;
+      }
+      .excaligif-icons-filter {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+      }
+      .excaligif-icons-filter label {
+        color: rgba(255, 255, 255, 0.38);
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.45px;
+        text-transform: uppercase;
+      }
+      .excaligif-icons-filter select {
+        width: 100%;
+        min-width: 0;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 8px;
+        color: rgba(255, 255, 255, 0.82);
+        font-family: inherit;
+        font-size: 11px;
+        padding: 7px 8px;
+        outline: none;
+      }
+      .excaligif-icons-filter select:focus {
+        border-color: hsla(270, 75%, 64%, 0.5);
+      }
+      .excaligif-icons-filter option {
+        background: #24242b;
+        color: #fff;
       }
 
       .excaligif-icons-segmented {
@@ -2465,7 +2476,7 @@
         transform: translateY(-3px);
         box-shadow: 0 6px 14px rgba(140, 90, 220, 0.12);
       }
-      .excaligif-icon-card:hover span.excaligif-icon-glyph {
+      .excaligif-icon-card:hover .excaligif-icon-glyph {
         transform: scale(1.15);
         color: hsl(270, 75%, 70%);
       }
@@ -2593,6 +2604,18 @@
       .excaligif-icons-sidebar.theme--light .excaligif-icons-controls {
         border-bottom-color: rgba(0, 0, 0, 0.06);
       }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-filter label {
+        color: rgba(0, 0, 0, 0.42);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-filter select {
+        background: rgba(0, 0, 0, 0.025);
+        border-color: rgba(0, 0, 0, 0.08);
+        color: rgba(0, 0, 0, 0.78);
+      }
+      .excaligif-icons-sidebar.theme--light .excaligif-icons-filter option {
+        background: #fff;
+        color: #212529;
+      }
       .excaligif-icons-sidebar.theme--light .excaligif-icons-segmented {
         background: rgba(0, 0, 0, 0.03);
         border-color: rgba(0, 0, 0, 0.05);
@@ -2666,7 +2689,7 @@
         background: rgba(0, 0, 0, 0.015);
         border-color: rgba(0, 0, 0, 0.04);
       }
-      .excaligif-icons-sidebar.theme--light .excaligif-icon-card span.excaligif-icon-glyph {
+      .excaligif-icons-sidebar.theme--light .excaligif-icon-card .excaligif-icon-glyph {
         color: rgba(0, 0, 0, 0.75);
       }
       .excaligif-icons-sidebar.theme--light .excaligif-icon-card span.icon-name {
@@ -2677,7 +2700,7 @@
         border-color: rgba(140, 90, 220, 0.3);
         box-shadow: 0 6px 14px rgba(140, 90, 220, 0.08);
       }
-      .excaligif-icons-sidebar.theme--light .excaligif-icon-card:hover span.excaligif-icon-glyph {
+      .excaligif-icons-sidebar.theme--light .excaligif-icon-card:hover .excaligif-icon-glyph {
         color: hsl(270, 75%, 45%);
       }
       .excaligif-icons-sidebar.theme--light .excaligif-icon-card:hover span.icon-name {
@@ -2731,11 +2754,6 @@
     }
     const styles = document.getElementById('excaligif-sidebar-styles');
     if (styles) styles.remove();
-    const fonts = document.getElementById('excaligif-material-fonts');
-    if (fonts) fonts.remove();
-    const lucideFonts = document.getElementById('excaligif-lucide-fonts');
-    if (lucideFonts) lucideFonts.remove();
-    
     // Remove drop listeners
     const canvas = document.querySelector('.excalidraw__canvas.interactive');
     if (canvas) {
@@ -2753,15 +2771,14 @@
     // Avoid duplicate initialization
     if (document.getElementById('excaligif-icons-sidebar')) return;
 
-    injectMaterialFonts();
     injectSidebarStyles();
 
     // 1. Create Floating Toggle Button
     sidebarButton = document.createElement('button');
     sidebarButton.id = 'excaligif-icons-btn';
     sidebarButton.className = 'excaligif-icons-btn';
-    sidebarButton.setAttribute('title', 'Icons & Symbols Library');
-    sidebarButton.innerHTML = '<span class="material-symbols-outlined">grid_view</span>';
+    sidebarButton.setAttribute('title', 'Iconify Icon Library');
+    sidebarButton.innerHTML = '<iconify-icon icon="lucide:grid-3x3" aria-hidden="true"></iconify-icon>';
     excalidraw.appendChild(sidebarButton);
 
     // 2. Create Sidebar Element
@@ -2770,28 +2787,30 @@
     sidebarElement.className = 'excaligif-icons-sidebar';
     sidebarElement.innerHTML = `
       <div class="excaligif-icons-header">
-        <h3>Icon Library</h3>
+        <h3>Iconify Library</h3>
         <button class="excaligif-icons-close" id="excaligif-icons-close">✕</button>
       </div>
       
       <div class="excaligif-icons-controls">
-        <div class="excaligif-icons-segmented">
-          <button class="active" id="btn-set-symbols">Symbols</button>
-          <button id="btn-set-icons">Icons</button>
-          <button id="btn-set-lucide">Lucide</button>
-        </div>
-        
-        <div class="excaligif-icons-styles" id="excaligif-icons-styles"></div>
-        
         <div class="excaligif-icons-search-container">
-          
-          <input type="text" id="excaligif-icons-search" placeholder="Search 4,000+ icons...">
+          <iconify-icon icon="lucide:search" aria-hidden="true"></iconify-icon>
+          <input type="text" id="excaligif-icons-search" placeholder="Search 300,000+ icons...">
           <button id="excaligif-icons-search-clear">✕</button>
         </div>
         
-        <div class="excaligif-icons-categories-container">
-          <div class="category-arrows-hint">Arrows (← →) navigate categories</div>
-          <div class="excaligif-icons-categories" id="excaligif-icons-categories"></div>
+        <div class="excaligif-icons-filters">
+          <div class="excaligif-icons-filter">
+            <label for="excaligif-icons-pack">Icon pack</label>
+            <select id="excaligif-icons-pack"><option value="">All packs</option></select>
+          </div>
+          <div class="excaligif-icons-filter">
+            <label for="excaligif-icons-category">Category</label>
+            <select id="excaligif-icons-category"><option value="">All categories</option></select>
+          </div>
+          <div class="excaligif-icons-filter">
+            <label for="excaligif-icons-tag">Tag</label>
+            <select id="excaligif-icons-tag"><option value="">All tags</option></select>
+          </div>
         </div>
       </div>
       
@@ -2823,59 +2842,22 @@
       closeSidebar();
     });
 
-    const setSymbolsBtn = sidebarElement.querySelector('#btn-set-symbols');
-    const setIconsBtn = sidebarElement.querySelector('#btn-set-icons');
-    const setLucideBtn = sidebarElement.querySelector('#btn-set-lucide');
-
-    setSymbolsBtn.addEventListener('click', () => {
-      if (activeSet === 'symbols') return;
-      activeSet = 'symbols';
-      currentPage = 1;
-      setSymbolsBtn.classList.add('active');
-      setIconsBtn.classList.remove('active');
-      setLucideBtn.classList.remove('active');
-      activeStyle = 'outlined'; 
-      updateStyleSelector();
-      renderIconsGrid();
-    });
-
-    setIconsBtn.addEventListener('click', () => {
-      if (activeSet === 'icons') return;
-      activeSet = 'icons';
-      currentPage = 1;
-      setIconsBtn.classList.add('active');
-      setSymbolsBtn.classList.remove('active');
-      setLucideBtn.classList.remove('active');
-      activeStyle = 'filled'; 
-      updateStyleSelector();
-      renderIconsGrid();
-    });
-
-    setLucideBtn.addEventListener('click', () => {
-      if (activeSet === 'lucide') return;
-      activeSet = 'lucide';
-      currentPage = 1;
-      setLucideBtn.classList.add('active');
-      setSymbolsBtn.classList.remove('active');
-      setIconsBtn.classList.remove('active');
-      activeStyle = ''; 
-      injectLucideFonts();
-      updateStyleSelector();
-      renderIconsGrid();
-    });
-
     const searchInput = sidebarElement.querySelector('#excaligif-icons-search');
     const searchClear = sidebarElement.querySelector('#excaligif-icons-search-clear');
+    const packSelect = sidebarElement.querySelector('#excaligif-icons-pack');
+    const categorySelect = sidebarElement.querySelector('#excaligif-icons-category');
+    const tagSelect = sidebarElement.querySelector('#excaligif-icons-tag');
 
     searchInput.addEventListener('input', (e) => {
-      searchQuery = e.target.value.toLowerCase();
+      searchQuery = e.target.value.trim();
       currentPage = 1;
       if (searchQuery) {
         searchClear.classList.add('visible');
       } else {
         searchClear.classList.remove('visible');
       }
-      renderIconsGrid();
+      clearTimeout(iconSearchTimer);
+      iconSearchTimer = setTimeout(loadIconResults, 300);
     });
 
     searchClear.addEventListener('click', () => {
@@ -2883,153 +2865,210 @@
       searchQuery = '';
       currentPage = 1;
       searchClear.classList.remove('visible');
-      renderIconsGrid();
+      clearTimeout(iconSearchTimer);
+      loadIconResults();
       searchInput.focus();
+    });
+
+    packSelect.addEventListener('change', () => {
+      clearTimeout(iconSearchTimer);
+      activePrefix = packSelect.value;
+      currentPage = 1;
+      loadIconResults();
+    });
+
+    categorySelect.addEventListener('change', () => {
+      clearTimeout(iconSearchTimer);
+      activeCategory = categorySelect.value;
+      activePrefix = '';
+      currentPage = 1;
+      renderCollectionFilters();
+      loadIconResults();
+    });
+
+    tagSelect.addEventListener('change', () => {
+      clearTimeout(iconSearchTimer);
+      activeTag = tagSelect.value;
+      activePrefix = '';
+      currentPage = 1;
+      renderCollectionFilters();
+      loadIconResults();
     });
 
     // Arrow navigation & general keyboard handling
     document.addEventListener('keydown', onKeyDown);
 
-    // Initial styles population
-    updateStyleSelector();
     updateSidebarTheme();
   }
 
   function onKeyDown(e) {
     if (!sidebarElement || !sidebarElement.classList.contains('open')) return;
-    if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
-
-    if (e.key === 'ArrowLeft') {
-      e.preventDefault();
-      cycleCategory(-1);
-    } else if (e.key === 'ArrowRight') {
-      e.preventDefault();
-      cycleCategory(1);
-    } else if (e.key === 'Escape') {
+    if (e.key === 'Escape') {
       e.preventDefault();
       closeSidebar();
     }
   }
 
-  function updateStyleSelector() {
-    const container = document.getElementById('excaligif-icons-styles');
-    if (!container) return;
+  function getMatchingCollections() {
+    if (!iconCollections) return [];
+    return Object.entries(iconCollections).filter(([, info]) => {
+      if (activeCategory && info.category !== activeCategory) return false;
+      if (activeTag && !(info.tags || []).includes(activeTag)) return false;
+      return true;
+    });
+  }
 
-    container.innerHTML = '';
-    let styles = [];
-    if (activeSet === 'symbols') {
-      styles = [
-        { id: 'outlined', label: 'Outlined' },
-        { id: 'rounded', label: 'Rounded' },
-        { id: 'sharp', label: 'Sharp' }
-      ];
-    } else if (activeSet === 'icons') {
-      styles = [
-        { id: 'filled', label: 'Filled' },
-        { id: 'outlined', label: 'Outlined' },
-        { id: 'round', label: 'Rounded' },
-        { id: 'sharp', label: 'Sharp' },
-        { id: 'two-tone', label: 'Two Tone' }
-      ];
+  function setSelectOptions(select, firstLabel, entries, selectedValue) {
+    if (!select) return;
+    select.innerHTML = '';
+    const first = document.createElement('option');
+    first.value = '';
+    first.textContent = firstLabel;
+    select.appendChild(first);
+    entries.forEach(([value, label]) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      select.appendChild(option);
+    });
+    select.value = selectedValue;
+  }
+
+  function renderCollectionFilters() {
+    if (!iconCollections || !sidebarElement) return;
+    const allCollections = Object.values(iconCollections);
+    const categories = [...new Set(allCollections.map(info => info.category).filter(Boolean))].sort();
+    const tags = [...new Set(allCollections.flatMap(info => info.tags || []))].sort();
+    const packs = getMatchingCollections().sort((a, b) => a[1].name.localeCompare(b[1].name));
+
+    setSelectOptions(
+      sidebarElement.querySelector('#excaligif-icons-category'),
+      'All categories',
+      categories.map(value => [value, value]),
+      activeCategory
+    );
+    setSelectOptions(
+      sidebarElement.querySelector('#excaligif-icons-tag'),
+      'All tags',
+      tags.map(value => [value, value]),
+      activeTag
+    );
+    setSelectOptions(
+      sidebarElement.querySelector('#excaligif-icons-pack'),
+      `All packs (${packs.length})`,
+      packs.map(([prefix, info]) => [prefix, `${info.name} (${(info.total || 0).toLocaleString()})`]),
+      activePrefix
+    );
+  }
+
+  function createIconResult(iconifyName) {
+    const separator = iconifyName.indexOf(':');
+    if (separator < 1) return null;
+    const prefix = iconifyName.slice(0, separator);
+    const name = iconifyName.slice(separator + 1);
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(prefix) || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) {
+      return null;
+    }
+    return {
+      icon: iconifyName,
+      name,
+      prefix,
+      collection: iconCollections && iconCollections[prefix]
+    };
+  }
+
+  async function loadIconCollections() {
+    if (iconCollections) return loadIconResults();
+    if (iconCollectionsPromise) return iconCollectionsPromise;
+    const grid = document.getElementById('excaligif-icons-grid');
+    if (grid) {
+      grid.innerHTML = '<div class="excaligif-icons-loading"><div class="spinner"></div><span>Loading Iconify collections...</span></div>';
+    }
+    iconCollectionsPromise = (async () => {
+      try {
+        const response = await fetch('https://api.iconify.design/collections');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        iconCollections = await response.json();
+        renderCollectionFilters();
+        await loadIconResults();
+      } catch (error) {
+        console.error('[Excali Up] Failed to load Iconify collections:', error);
+        if (grid) grid.innerHTML = '<div class="excaligif-icons-error">Failed to load Iconify collections.</div>';
+      } finally {
+        iconCollectionsPromise = null;
+      }
+    })();
+    return iconCollectionsPromise;
+  }
+
+  async function loadIconResults() {
+    if (!iconCollections) return loadIconCollections();
+    const requestId = ++iconRequestId;
+    const grid = document.getElementById('excaligif-icons-grid');
+    if (grid) {
+      grid.innerHTML = '<div class="excaligif-icons-loading"><div class="spinner"></div><span>Loading icons...</span></div>';
     }
 
-    styles.forEach((sty) => {
-      const btn = document.createElement('button');
-      btn.textContent = sty.label;
-      if (sty.id === activeStyle) {
-        btn.className = 'active';
-      }
-      btn.addEventListener('click', () => {
-        if (activeStyle === sty.id) return;
-        activeStyle = sty.id;
-        currentPage = 1;
-        container.querySelectorAll('button').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        renderIconsGrid();
-      });
-      container.appendChild(btn);
-    });
-  }
+    try {
+      let iconNames = [];
+      const matchingCollections = getMatchingCollections();
 
-  function cycleCategory(dir) {
-    if (!iconsData || !iconsData.categories) return;
-    const cats = ['All', ...iconsData.categories];
-    const curIdx = cats.indexOf(activeCategory);
-    let nextIdx = curIdx + dir;
-    if (nextIdx < 0) nextIdx = cats.length - 1;
-    if (nextIdx >= cats.length) nextIdx = 0;
-    
-    selectCategory(cats[nextIdx]);
-  }
-
-  function selectCategory(catName) {
-    activeCategory = catName;
-    currentPage = 1;
-    const container = document.getElementById('excaligif-icons-categories');
-    if (!container) return;
-
-    container.querySelectorAll('.excaligif-category-pill').forEach((pill) => {
-      if (pill.dataset.cat === catName) {
-        pill.classList.add('active');
-        pill.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+      if (searchQuery) {
+        const url = new URL('https://api.iconify.design/search');
+        url.searchParams.set('query', searchQuery);
+        url.searchParams.set('limit', '999');
+        if (activePrefix) {
+          url.searchParams.set('prefix', activePrefix);
+        } else if (activeTag) {
+          const prefixes = matchingCollections.map(([prefix]) => prefix);
+          if (prefixes.length === 0) {
+            if (requestId !== iconRequestId) return;
+            visibleIcons = [];
+            renderIconsGrid();
+            return;
+          }
+          url.searchParams.set('prefixes', prefixes.join(','));
+        } else if (activeCategory) {
+          url.searchParams.set('category', activeCategory);
+        }
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        iconNames = data.icons || [];
+      } else if (activePrefix) {
+        const response = await fetch(`https://api.iconify.design/collection?prefix=${encodeURIComponent(activePrefix)}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        const names = [
+          ...(data.uncategorized || []),
+          ...Object.values(data.categories || {}).flat()
+        ];
+        iconNames = [...new Set(names)].map(name => `${activePrefix}:${name}`);
       } else {
-        pill.classList.remove('active');
+        iconNames = matchingCollections.flatMap(([prefix, info]) =>
+          (info.samples || []).map(name => `${prefix}:${name}`)
+        );
       }
-    });
 
-    renderIconsGrid();
-  }
-
-  function renderCategories() {
-    const container = document.getElementById('excaligif-icons-categories');
-    if (!container || !iconsData) return;
-
-    container.innerHTML = '';
-    const cats = ['All', ...iconsData.categories];
-    cats.forEach((cat) => {
-      const pill = document.createElement('button');
-      pill.className = 'excaligif-category-pill' + (cat === activeCategory ? ' active' : '');
-      pill.textContent = cat;
-      pill.dataset.cat = cat;
-      pill.addEventListener('click', () => {
-        selectCategory(cat);
-      });
-      container.appendChild(pill);
-    });
+      if (requestId !== iconRequestId) return;
+      visibleIcons = iconNames.map(createIconResult).filter(Boolean);
+      renderIconsGrid();
+    } catch (error) {
+      if (requestId !== iconRequestId) return;
+      console.error('[Excali Up] Iconify search failed:', error);
+      visibleIcons = [];
+      if (grid) grid.innerHTML = '<div class="excaligif-icons-error">Failed to load icons. Try again.</div>';
+      updatePaginationControls(0);
+    }
   }
 
   function renderIconsGrid() {
     const grid = document.getElementById('excaligif-icons-grid');
     if (!grid) return;
 
-    const catContainer = document.querySelector('.excaligif-icons-categories-container');
-    if (catContainer) {
-      catContainer.style.display = activeSet === 'lucide' ? 'none' : 'flex';
-    }
-
-    const currentData = activeSet === 'lucide' ? lucideData : iconsData;
-    if (!currentData) {
-      loadIconsData();
-      return;
-    }
-
     grid.innerHTML = '';
-    
-    const filtered = currentData.icons.filter((icon) => {
-      if (activeSet === 'symbols' && !icon.s) return false;
-      if (activeSet === 'icons' && !icon.i) return false;
-      if (activeSet !== 'lucide' && activeCategory !== 'All' && icon.c !== activeCategory) return false;
 
-      if (searchQuery) {
-        const matchesName = icon.n.includes(searchQuery);
-        const matchesTags = icon.t.some(t => t.toLowerCase().includes(searchQuery));
-        if (!matchesName && !matchesTags) return false;
-      }
-
-      return true;
-    });
-
-    if (filtered.length === 0) {
+    if (visibleIcons.length === 0) {
       grid.innerHTML = '<div class="excaligif-icons-empty">No matching icons found.</div>';
       updatePaginationControls(0);
       const footer = document.getElementById('excaligif-icons-footer');
@@ -3037,54 +3076,34 @@
       return;
     }
 
-    const totalPages = Math.ceil(filtered.length / pageSize) || 1;
+    const totalPages = Math.ceil(visibleIcons.length / pageSize) || 1;
     if (currentPage > totalPages) currentPage = totalPages;
 
     const startIdx = (currentPage - 1) * pageSize;
     const endIdx = startIdx + pageSize;
-    const itemsToRender = filtered.slice(startIdx, endIdx);
+    const itemsToRender = visibleIcons.slice(startIdx, endIdx);
 
     itemsToRender.forEach((icon) => {
       const card = document.createElement('div');
       card.className = 'excaligif-icon-card';
       card.setAttribute('draggable', 'true');
-      card.setAttribute('title', activeSet === 'lucide'
-        ? `${icon.n}\nClick to copy & paste\nDrag to canvas`
-        : `${icon.n} (${icon.c})\nClick to copy & paste\nDrag to canvas`
-      );
-      
-      if (activeSet === 'lucide') {
-        card.innerHTML = `
-          <span class="excaligif-icon-glyph icon-${icon.n}"></span>
-          <span class="icon-name">${icon.n.replace(/-/g, ' ')}</span>
-        `;
-      } else {
-        let glyphClass = '';
-        if (activeSet === 'symbols') {
-          glyphClass = `material-symbols-${activeStyle}`;
-        } else {
-          if (activeStyle === 'filled') {
-            glyphClass = 'material-icons';
-          } else {
-            glyphClass = `material-icons-${activeStyle}`;
-          }
-        }
+      const collectionName = icon.collection ? icon.collection.name : icon.prefix;
+      card.setAttribute('title', `${icon.name}\n${collectionName}\nClick to copy & paste\nDrag to canvas`);
 
-        card.innerHTML = `
-          <span class="excaligif-icon-glyph ${glyphClass}">${icon.n}</span>
-          <span class="icon-name">${icon.n.replace(/_/g, ' ')}</span>
-        `;
-      }
+      card.innerHTML = `
+        <iconify-icon class="excaligif-icon-glyph" icon="${icon.icon}" aria-hidden="true"></iconify-icon>
+        <span class="icon-name">${icon.name.replace(/[-_]/g, ' ')}</span>
+      `;
 
       card.addEventListener('mouseenter', () => {
-        getSvgContent(icon.n, activeSet, activeStyle);
+        getSvgContent(icon.icon);
       });
 
       card.addEventListener('dragstart', (e) => {
         isDraggingIcon = true;
-        draggingIconData = { name: icon.n, set: activeSet, style: activeStyle };
+        draggingIconData = { name: icon.name, icon: icon.icon };
         e.dataTransfer.effectAllowed = 'copy';
-        e.dataTransfer.setData('text/plain', icon.n);
+        e.dataTransfer.setData('text/plain', icon.icon);
         card.style.opacity = '0.5';
       });
 
@@ -3099,10 +3118,10 @@
         card.innerHTML = '<div class="spinner-small" style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.2);border-top-color:currentColor;border-radius:50%;animation:excaligif-spin 0.6s linear infinite;margin-bottom:6px;"></div><span class="icon-name">Fetching...</span>';
         
         try {
-          const svgContent = await getSvgContent(icon.n, activeSet, activeStyle);
+          const svgContent = await getSvgContent(icon.icon);
           if (svgContent) {
             await navigator.clipboard.writeText(svgContent);
-            showToast(`"${icon.n}" copied!`);
+            showToast(`"${icon.name}" copied!`);
 
             const clipboardData = new DataTransfer();
             clipboardData.setData('text/plain', svgContent);
@@ -3126,11 +3145,15 @@
       grid.appendChild(card);
     });
 
-    updatePaginationControls(filtered.length);
+    updatePaginationControls(visibleIcons.length);
 
     const footer = document.getElementById('excaligif-icons-footer');
     if (footer) {
-      footer.textContent = `Found ${filtered.length} icon${filtered.length === 1 ? '' : 's'}. Click or drag.`;
+      const context = activePrefix && iconCollections[activePrefix]
+        ? iconCollections[activePrefix].name
+        : `${getMatchingCollections().length} packs`;
+      const capped = searchQuery && visibleIcons.length === 999 ? 'First ' : '';
+      footer.textContent = `${capped}${visibleIcons.length.toLocaleString()} icons · ${context} · Click or drag.`;
     }
   }
 
@@ -3148,11 +3171,11 @@
 
     container.innerHTML = `
       <button class="excaligif-page-btn" id="btn-page-prev" ${currentPage === 1 ? 'disabled' : ''}>
-        <span class="material-symbols-outlined" style="font-size: 14px; font-family: 'Material Symbols Outlined' !important;">arrow_back_ios</span>
+        <iconify-icon icon="lucide:chevron-left" aria-hidden="true"></iconify-icon>
       </button>
       <span class="excaligif-page-info">Page ${currentPage} of ${totalPages}</span>
       <button class="excaligif-page-btn" id="btn-page-next" ${currentPage === totalPages ? 'disabled' : ''}>
-        <span class="material-symbols-outlined" style="font-size: 14px; font-family: 'Material Symbols Outlined' !important;">arrow_forward_ios</span>
+        <iconify-icon icon="lucide:chevron-right" aria-hidden="true"></iconify-icon>
       </button>
     `;
 
@@ -3212,8 +3235,8 @@
     if (!sidebarElement || !sidebarButton) return;
     sidebarElement.classList.add('open');
     sidebarButton.classList.add('active');
-    if (!iconsData) {
-      loadIconsData();
+    if (!iconCollections) {
+      loadIconCollections();
     } else {
       renderIconsGrid();
     }
@@ -3223,50 +3246,6 @@
     if (!sidebarElement || !sidebarButton) return;
     sidebarElement.classList.remove('open');
     sidebarButton.classList.remove('active');
-  }
-
-  function loadIconsData() {
-    const grid = document.getElementById('excaligif-icons-grid');
-    if (activeSet === 'lucide') {
-      if (lucideData) return;
-      if (grid) {
-        grid.innerHTML = '<div class="excaligif-icons-loading"><div class="spinner"></div><span>Loading Lucide library...</span></div>';
-      }
-
-      const onResponse = (e) => {
-        document.removeEventListener('ExcaliGifLucideDataResponse', onResponse);
-        if (e.detail && e.detail.success) {
-          lucideData = e.detail.data;
-          renderIconsGrid();
-        } else {
-          if (grid) {
-            grid.innerHTML = '<div class="excaligif-icons-error">Failed to load Lucide database.</div>';
-          }
-        }
-      };
-      document.addEventListener('ExcaliGifLucideDataResponse', onResponse);
-      document.dispatchEvent(new CustomEvent('ExcaliGifGetLucideData'));
-    } else {
-      if (iconsData) return;
-      if (grid) {
-        grid.innerHTML = '<div class="excaligif-icons-loading"><div class="spinner"></div><span>Loading library...</span></div>';
-      }
-
-      const onResponse = (e) => {
-        document.removeEventListener('ExcaliGifIconsDataResponse', onResponse);
-        if (e.detail && e.detail.success) {
-          iconsData = e.detail.data;
-          renderCategories();
-          renderIconsGrid();
-        } else {
-          if (grid) {
-            grid.innerHTML = '<div class="excaligif-icons-error">Failed to load icons database.</div>';
-          }
-        }
-      };
-      document.addEventListener('ExcaliGifIconsDataResponse', onResponse);
-      document.dispatchEvent(new CustomEvent('ExcaliGifGetIconsData'));
-    }
   }
 
   function setupCanvasDropIntercept() {
@@ -3292,7 +3271,7 @@
     e.preventDefault();
     e.stopPropagation();
 
-    const { name, set, style } = draggingIconData;
+    const { name, icon } = draggingIconData;
     isDraggingIcon = false;
     draggingIconData = null;
 
@@ -3304,7 +3283,7 @@
 
     try {
       showToast("Fetching SVG...");
-      const svgContent = await getSvgContent(name, set, style);
+      const svgContent = await getSvgContent(icon);
       if (!svgContent) {
         showToast("Failed to fetch SVG");
         return;
@@ -3330,30 +3309,23 @@
     }
   }
 
-  async function getSvgContent(name, set, style) {
-    const cacheKey = `${set}_${style}_${name}`;
-    if (svgCache.has(cacheKey)) {
-      return svgCache.get(cacheKey);
+  async function getSvgContent(iconifyName) {
+    if (svgCache.has(iconifyName)) {
+      return svgCache.get(iconifyName);
     }
 
-    let url;
-    if (set === 'symbols') {
-      url = `https://cdn.jsdelivr.net/npm/@material-symbols/svg-400@latest/${style}/${name}.svg`;
-    } else if (set === 'icons') {
-      url = `https://cdn.jsdelivr.net/npm/@material-design-icons/svg@latest/${style}/${name}.svg`;
-    } else if (set === 'lucide') {
-      url = `https://cdn.jsdelivr.net/npm/lucide-static@0.473.0/icons/${name}.svg`;
-    }
+    const [prefix, iconName] = iconifyName.split(':');
+    const url = `https://api.iconify.design/${encodeURIComponent(prefix)}/${encodeURIComponent(iconName)}.svg`;
 
     try {
       const response = await fetch(url);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       let text = await response.text();
       text = cleanSvg(text);
-      svgCache.set(cacheKey, text);
+      svgCache.set(iconifyName, text);
       return text;
     } catch (e) {
-      console.error(`[Excali Up] SVG fetch failed for ${name}:`, e);
+      console.error(`[Excali Up] SVG fetch failed for ${iconifyName}:`, e);
       return null;
     }
   }
