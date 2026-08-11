@@ -2390,6 +2390,7 @@
     if (currentApp && !document.hidden) {
       updateToolbar();
       updateSidebarTheme();
+      mountVaultButton();
       if (rootVaultHandle && vaultSyncState !== 'unlinked' && vaultSyncState !== 'permission-required') {
         const elements = currentApp.api ? currentApp.api.getSceneElements() : [];
         const appState = currentApp.state || {};
@@ -3262,12 +3263,11 @@
 
       /* --- Local Vault Status Button --- */
       .excaliup-vault-btn {
-        position: absolute;
-        top: 14px;
-        left: 64px;
+        position: relative;
         height: 36px;
-        padding: 0 14px;
-        border-radius: 8px;
+        margin-left: 8px;
+        padding: 0 12px;
+        border-radius: var(--border-radius-lg, 8px);
         background: rgba(30, 30, 38, 0.9);
         border: 1px solid rgba(255, 255, 255, 0.16);
         color: #ffffff;
@@ -3275,15 +3275,29 @@
         font-weight: 500;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         cursor: pointer;
-        z-index: 100;
+        z-index: 2;
         display: inline-flex;
         align-items: center;
         gap: 8px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        max-width: 180px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
         backdrop-filter: blur(12px);
         -webkit-backdrop-filter: blur(12px);
         transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
         user-select: none;
+        flex-shrink: 0;
+        vertical-align: middle;
+      }
+      .excalidraw > .excaliup-vault-btn {
+        position: absolute;
+        top: 12px;
+        left: 56px;
+        margin-left: 0;
+      }
+      .excaliup-vault-btn span.label-text {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       .excaliup-vault-btn:hover {
         background: rgba(45, 45, 58, 0.98);
@@ -3307,6 +3321,7 @@
         height: 8px;
         border-radius: 50%;
         background: #10b981;
+        flex-shrink: 0;
       }
       .excaliup-vault-btn.status--saving .status-dot {
         background: #3b82f6;
@@ -3662,6 +3677,206 @@
       }
       .excaliup-vault-drawer.theme--light .excaliup-vault-footer {
         border-top-color: rgba(0, 0, 0, 0.06);
+      }
+
+      /* --- Context Popover Menu --- */
+      .excaliup-vault-popover {
+        position: fixed;
+        background: rgba(26, 26, 36, 0.96);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 10px;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        z-index: 10005;
+        padding: 6px;
+        min-width: 140px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        color: rgba(255, 255, 255, 0.9);
+        animation: excaliup-popover-in 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      .excaliup-vault-popover.theme--light {
+        background: rgba(255, 255, 255, 0.98);
+        border: 1px solid rgba(0, 0, 0, 0.12);
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+        color: #1f2937;
+      }
+      .excaliup-vault-popover-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        border: none;
+        background: transparent;
+        color: inherit;
+        width: 100%;
+        text-align: left;
+        transition: background 0.12s ease;
+      }
+      .excaliup-vault-popover-item:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .excaliup-vault-popover.theme--light .excaliup-vault-popover-item:hover {
+        background: rgba(0, 0, 0, 0.05);
+      }
+      .excaliup-vault-popover-item.danger {
+        color: #f87171;
+      }
+      .excaliup-vault-popover-item.danger:hover {
+        background: rgba(239, 68, 68, 0.15);
+        color: #ef4444;
+      }
+      @keyframes excaliup-popover-in {
+        from { opacity: 0; transform: scale(0.95) translateY(-4px); }
+        to { opacity: 1; transform: scale(1) translateY(0); }
+      }
+
+      /* --- Modal Dialogs (Prompt & Confirm) --- */
+      .excaliup-vault-modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background: rgba(0, 0, 0, 0.6);
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+        z-index: 10010;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        animation: excaliup-fade-in 0.15s ease-out;
+      }
+      .excaliup-vault-modal {
+        width: 90%;
+        max-width: 420px;
+        background: rgba(24, 24, 32, 0.98);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 14px;
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+        padding: 22px;
+        color: #ffffff;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        animation: excaliup-modal-scale 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      .excaliup-vault-modal.theme--light {
+        background: #ffffff;
+        border: 1px solid rgba(0, 0, 0, 0.12);
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.18);
+        color: #111827;
+      }
+      .excaliup-vault-modal-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .excaliup-vault-modal-icon {
+        width: 38px;
+        height: 38px;
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 20px;
+        background: rgba(140, 90, 220, 0.15);
+        color: hsl(270, 75%, 70%);
+        flex-shrink: 0;
+      }
+      .excaliup-vault-modal-icon.danger {
+        background: rgba(239, 68, 68, 0.15);
+        color: #ef4444;
+      }
+      .excaliup-vault-modal-title {
+        font-size: 16px;
+        font-weight: 600;
+      }
+      .excaliup-vault-modal-desc {
+        font-size: 13px;
+        opacity: 0.75;
+        line-height: 1.4;
+        margin-top: 2px;
+      }
+      .excaliup-vault-modal-input {
+        width: 100%;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 8px;
+        padding: 10px 12px;
+        color: inherit;
+        font-size: 14px;
+        outline: none;
+        box-sizing: border-box;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      }
+      .excaliup-vault-modal-input:focus {
+        border-color: hsl(270, 75%, 64%);
+        box-shadow: 0 0 0 3px rgba(140, 90, 220, 0.25);
+      }
+      .excaliup-vault-modal.theme--light .excaliup-vault-modal-input {
+        background: #f9fafb;
+        border-color: rgba(0, 0, 0, 0.15);
+      }
+      .excaliup-vault-modal-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        margin-top: 4px;
+      }
+      .excaliup-vault-modal-btn {
+        padding: 8px 16px;
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        border: none;
+        transition: all 0.15s ease;
+      }
+      .excaliup-vault-modal-btn.secondary {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        color: inherit;
+      }
+      .excaliup-vault-modal-btn.secondary:hover {
+        background: rgba(255, 255, 255, 0.14);
+      }
+      .excaliup-vault-modal.theme--light .excaliup-vault-modal-btn.secondary {
+        background: #f3f4f6;
+        border-color: rgba(0, 0, 0, 0.12);
+      }
+      .excaliup-vault-modal.theme--light .excaliup-vault-modal-btn.secondary:hover {
+        background: #e5e7eb;
+      }
+      .excaliup-vault-modal-btn.primary {
+        background: hsl(270, 75%, 64%);
+        color: #ffffff;
+      }
+      .excaliup-vault-modal-btn.primary:hover {
+        background: hsl(270, 75%, 58%);
+      }
+      .excaliup-vault-modal-btn.danger {
+        background: #ef4444;
+        color: #ffffff;
+      }
+      .excaliup-vault-modal-btn.danger:hover {
+        background: #dc2626;
+      }
+      @keyframes excaliup-fade-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      @keyframes excaliup-modal-scale {
+        from { opacity: 0; transform: scale(0.92) translateY(8px); }
+        to { opacity: 1; transform: scale(1) translateY(0); }
       }
     `;
     document.head.appendChild(style);
@@ -4517,7 +4732,7 @@
         break;
     }
 
-    vaultStatusButton.innerHTML = `${iconHtml}<span>${label}</span>`;
+    vaultStatusButton.innerHTML = `${iconHtml}<span class="label-text">${label}</span>`;
     vaultStatusButton.setAttribute('title', tooltip);
   }
 
@@ -4544,6 +4759,7 @@
 
       const currentHash = getSceneHash(elements, appState, files);
       if (currentHash === lastSavedSceneHash && !immediate) {
+        setVaultSyncState('synced');
         return;
       }
 
@@ -4570,7 +4786,6 @@
     if (immediate) {
       performSave();
     } else {
-      setVaultSyncState('saving');
       autoSaveTimer = setTimeout(performSave, 1200);
     }
   }
@@ -4588,13 +4803,23 @@
       rootVaultHandle = handle;
       vaultMetadata = await Core.readVaultMetadata(handle);
       currentVaultRelativePath = '';
-      setVaultSyncState('synced');
 
       const folderNameSpan = document.getElementById('excaliup-vault-folder-name');
       if (folderNameSpan) folderNameSpan.textContent = handle.name;
 
       if (currentApp && currentApp.api) {
-        scheduleVaultAutoSave(true);
+        const elements = currentApp.api.getSceneElements();
+        const appState = currentApp.state || {};
+        const files = (currentApp.api.getFiles && currentApp.api.getFiles()) || currentApp.files || {};
+        const currentHash = getSceneHash(elements, appState, files);
+        if (elements.length > 0) {
+          await scheduleVaultAutoSave(true);
+        } else {
+          lastSavedSceneHash = currentHash;
+          setVaultSyncState('synced');
+        }
+      } else {
+        setVaultSyncState('synced');
       }
 
       await refreshVaultListing(true);
@@ -4661,6 +4886,224 @@
     }
   }
 
+  // --- Modal & Popover Helpers ---
+  let activeVaultModal = null;
+  let activeVaultPopover = null;
+
+  function closeActiveVaultPopover() {
+    if (activeVaultPopover) {
+      activeVaultPopover.remove();
+      activeVaultPopover = null;
+    }
+  }
+
+  document.addEventListener('click', (e) => {
+    if (activeVaultPopover && !e.target.closest('.excaliup-vault-popover') && !e.target.closest('.excaliup-vault-item-menu-btn')) {
+      closeActiveVaultPopover();
+    }
+  });
+
+  function showVaultActionPopover(anchorElement, file) {
+    closeActiveVaultPopover();
+    const excalidraw = document.querySelector('.excalidraw') || document.body;
+    const rect = anchorElement.getBoundingClientRect();
+
+    const popover = document.createElement('div');
+    popover.className = 'excaliup-vault-popover';
+    if (currentApp && currentApp.state && currentApp.state.theme === 'light') {
+      popover.classList.add('theme--light');
+    }
+
+    popover.innerHTML = `
+      <button class="excaliup-vault-popover-item" id="popover-rename">
+        <iconify-icon icon="lucide:pencil"></iconify-icon> <span>Rename</span>
+      </button>
+      <button class="excaliup-vault-popover-item" id="popover-duplicate">
+        <iconify-icon icon="lucide:copy"></iconify-icon> <span>Duplicate</span>
+      </button>
+      <button class="excaliup-vault-popover-item danger" id="popover-delete">
+        <iconify-icon icon="lucide:trash-2"></iconify-icon> <span>Delete</span>
+      </button>
+    `;
+
+    popover.style.top = `${rect.bottom + 4}px`;
+    popover.style.left = `${Math.min(rect.left - 100, window.innerWidth - 160)}px`;
+
+    popover.querySelector('#popover-rename').addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeActiveVaultPopover();
+      renameVaultDrawing(file.path);
+    });
+
+    popover.querySelector('#popover-duplicate').addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeActiveVaultPopover();
+      duplicateVaultDrawing(file.path);
+    });
+
+    popover.querySelector('#popover-delete').addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeActiveVaultPopover();
+      deleteVaultDrawing(file.path);
+    });
+
+    excalidraw.appendChild(popover);
+    activeVaultPopover = popover;
+  }
+
+  function showVaultPromptModal({ title, description, placeholder = '', initialValue = '', confirmText = 'Confirm', isDanger = false, onConfirm }) {
+    if (activeVaultModal) {
+      activeVaultModal.remove();
+      activeVaultModal = null;
+    }
+
+    const excalidraw = document.querySelector('.excalidraw') || document.body;
+    const overlay = document.createElement('div');
+    overlay.className = 'excaliup-vault-modal-overlay';
+
+    const isLight = currentApp && currentApp.state && currentApp.state.theme === 'light';
+
+    overlay.innerHTML = `
+      <div class="excaliup-vault-modal ${isLight ? 'theme--light' : ''}">
+        <div class="excaliup-vault-modal-header">
+          <div class="excaliup-vault-modal-icon ${isDanger ? 'danger' : ''}">
+            <iconify-icon icon="${isDanger ? 'lucide:alert-triangle' : 'lucide:file-edit'}"></iconify-icon>
+          </div>
+          <div>
+            <div class="excaliup-vault-modal-title">${title}</div>
+            ${description ? `<div class="excaliup-vault-modal-desc">${description}</div>` : ''}
+          </div>
+        </div>
+        <input type="text" class="excaliup-vault-modal-input" placeholder="${placeholder}" value="${initialValue.replace(/"/g, '&quot;')}" />
+        <div class="excaliup-vault-modal-actions">
+          <button class="excaliup-vault-modal-btn secondary" id="modal-cancel">Cancel</button>
+          <button class="excaliup-vault-modal-btn ${isDanger ? 'danger' : 'primary'}" id="modal-confirm">${confirmText}</button>
+        </div>
+      </div>
+    `;
+
+    const input = overlay.querySelector('.excaliup-vault-modal-input');
+    const cancelBtn = overlay.querySelector('#modal-cancel');
+    const confirmBtn = overlay.querySelector('#modal-confirm');
+
+    const closeModal = () => {
+      overlay.remove();
+      if (activeVaultModal === overlay) activeVaultModal = null;
+    };
+
+    const handleConfirm = () => {
+      const val = input.value.trim();
+      if (val) {
+        closeModal();
+        onConfirm(val);
+      } else {
+        input.focus();
+      }
+    };
+
+    cancelBtn.addEventListener('click', closeModal);
+    confirmBtn.addEventListener('click', handleConfirm);
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) closeModal();
+    });
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        handleConfirm();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeModal();
+      }
+    });
+
+    excalidraw.appendChild(overlay);
+    activeVaultModal = overlay;
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 50);
+  }
+
+  function showVaultConfirmModal({ title, message, confirmText = 'Delete', isDanger = true, onConfirm }) {
+    if (activeVaultModal) {
+      activeVaultModal.remove();
+      activeVaultModal = null;
+    }
+
+    const excalidraw = document.querySelector('.excalidraw') || document.body;
+    const overlay = document.createElement('div');
+    overlay.className = 'excaliup-vault-modal-overlay';
+
+    const isLight = currentApp && currentApp.state && currentApp.state.theme === 'light';
+
+    overlay.innerHTML = `
+      <div class="excaliup-vault-modal ${isLight ? 'theme--light' : ''}">
+        <div class="excaliup-vault-modal-header">
+          <div class="excaliup-vault-modal-icon ${isDanger ? 'danger' : ''}">
+            <iconify-icon icon="${isDanger ? 'lucide:trash-2' : 'lucide:help-circle'}"></iconify-icon>
+          </div>
+          <div>
+            <div class="excaliup-vault-modal-title">${title}</div>
+            <div class="excaliup-vault-modal-desc">${message}</div>
+          </div>
+        </div>
+        <div class="excaliup-vault-modal-actions">
+          <button class="excaliup-vault-modal-btn secondary" id="modal-cancel">Cancel</button>
+          <button class="excaliup-vault-modal-btn ${isDanger ? 'danger' : 'primary'}" id="modal-confirm">${confirmText}</button>
+        </div>
+      </div>
+    `;
+
+    const cancelBtn = overlay.querySelector('#modal-cancel');
+    const confirmBtn = overlay.querySelector('#modal-confirm');
+
+    const closeModal = () => {
+      overlay.remove();
+      if (activeVaultModal === overlay) activeVaultModal = null;
+    };
+
+    cancelBtn.addEventListener('click', closeModal);
+    confirmBtn.addEventListener('click', () => {
+      closeModal();
+      onConfirm();
+    });
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) closeModal();
+    });
+
+    document.addEventListener('keydown', function escHandler(e) {
+      if (e.key === 'Escape') {
+        closeModal();
+        document.removeEventListener('keydown', escHandler);
+      }
+    }, { once: true });
+
+    excalidraw.appendChild(overlay);
+    activeVaultModal = overlay;
+  }
+
+  async function duplicateVaultDrawing(relativePath) {
+    if (!rootVaultHandle || !relativePath) return;
+    const oldFileName = relativePath.split('/').pop().replace(/\.excalidraw$/, '');
+    const newName = `${oldFileName} (Copy)`;
+    const cleanFileName = `${Core.sanitizeFileName(newName, 'Copy')}.excalidraw`;
+
+    const segments = relativePath.split('/');
+    segments.pop();
+    const newRelativePath = segments.length > 0 ? `${segments.join('/')}/${cleanFileName}` : cleanFileName;
+
+    try {
+      const content = await Core.readDrawingFile(rootVaultHandle, relativePath);
+      await Core.writeDrawingFile(rootVaultHandle, newRelativePath, content);
+      await refreshVaultListing(true);
+      showToast(`Duplicated to ${cleanFileName}`);
+    } catch (err) {
+      console.error('[Excali Up] Duplicate failed:', err);
+      showToast('Failed to duplicate drawing');
+    }
+  }
+
   async function createNewVaultDrawing() {
     if (!rootVaultHandle) {
       await connectLocalVaultFolder();
@@ -4668,48 +5111,54 @@
     }
 
     const defaultName = `Drawing-${new Date().toISOString().slice(0, 10)}-${Date.now().toString().slice(-4)}`;
-    const inputName = prompt('Enter drawing name:', defaultName);
-    if (!inputName) return;
+    showVaultPromptModal({
+      title: 'New Drawing',
+      description: 'Enter a name for your new Excalidraw drawing:',
+      placeholder: 'Drawing name...',
+      initialValue: defaultName,
+      confirmText: 'Create Drawing',
+      onConfirm: async (inputName) => {
+        const cleanName = Core.sanitizeFileName(inputName, defaultName);
+        const fileName = cleanName.endsWith('.excalidraw') ? cleanName : `${cleanName}.excalidraw`;
+        const targetPath = currentVaultRelativePath ? `${currentVaultRelativePath}/${fileName}` : fileName;
 
-    const cleanName = Core.sanitizeFileName(inputName, defaultName);
-    const fileName = cleanName.endsWith('.excalidraw') ? cleanName : `${cleanName}.excalidraw`;
-    const targetPath = currentVaultRelativePath ? `${currentVaultRelativePath}/${fileName}` : fileName;
+        try {
+          if (activeDrawingRelativePath && autoSaveTimer) {
+            await scheduleVaultAutoSave(true);
+          }
 
-    try {
-      if (activeDrawingRelativePath && autoSaveTimer) {
-        await scheduleVaultAutoSave(true);
-      }
+          if (currentApp && currentApp.api) {
+            if (typeof currentApp.api.resetScene === 'function') {
+              currentApp.api.resetScene();
+            } else {
+              currentApp.api.updateScene({ elements: [], commitToHistory: true });
+            }
+            if (currentApp.state) {
+              currentApp.state.name = cleanName;
+            }
+          }
 
-      if (currentApp && currentApp.api) {
-        if (typeof currentApp.api.resetScene === 'function') {
-          currentApp.api.resetScene();
-        } else {
-          currentApp.api.updateScene({ elements: [], commitToHistory: true });
+          activeDrawingRelativePath = targetPath;
+          const initialSceneJson = Core.serializeExcalidrawScene({
+            elements: [],
+            appState: { name: cleanName, viewBackgroundColor: '#ffffff' },
+            files: {}
+          });
+          await Core.writeDrawingFile(rootVaultHandle, targetPath, initialSceneJson);
+          lastSavedSceneHash = getSceneHash([], currentApp.state, {});
+
+          vaultMetadata.lastOpenedFile = targetPath;
+          await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
+
+          setVaultSyncState('synced');
+          refreshVaultListing(true);
+          showToast(`Created ${fileName}`);
+        } catch (err) {
+          console.error('[Excali Up] Failed to create drawing:', err);
+          showToast('Failed to create drawing');
         }
-        if (currentApp.state) {
-          currentApp.state.name = cleanName;
-        }
       }
-
-      activeDrawingRelativePath = targetPath;
-      const initialSceneJson = Core.serializeExcalidrawScene({
-        elements: [],
-        appState: { name: cleanName, viewBackgroundColor: '#ffffff' },
-        files: {}
-      });
-      await Core.writeDrawingFile(rootVaultHandle, targetPath, initialSceneJson);
-      lastSavedSceneHash = getSceneHash([], currentApp.state, {});
-
-      vaultMetadata.lastOpenedFile = targetPath;
-      await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
-
-      setVaultSyncState('synced');
-      refreshVaultListing(true);
-      showToast(`Created ${fileName}`);
-    } catch (err) {
-      console.error('[Excali Up] Failed to create drawing:', err);
-      showToast('Failed to create drawing');
-    }
+    });
   }
 
   async function createNewVaultSubfolder() {
@@ -4718,22 +5167,28 @@
       if (!rootVaultHandle) return;
     }
 
-    const folderName = prompt('Enter new folder name:');
-    if (!folderName) return;
+    showVaultPromptModal({
+      title: 'New Subfolder',
+      description: 'Create a new folder in current directory to organize drawings:',
+      placeholder: 'Folder name...',
+      initialValue: '',
+      confirmText: 'Create Folder',
+      onConfirm: async (folderName) => {
+        const cleanFolderName = Core.sanitizeFileName(folderName);
+        if (!cleanFolderName) return;
 
-    const cleanFolderName = Core.sanitizeFileName(folderName);
-    if (!cleanFolderName) return;
+        const targetSubPath = currentVaultRelativePath ? `${currentVaultRelativePath}/${cleanFolderName}` : cleanFolderName;
 
-    const targetSubPath = currentVaultRelativePath ? `${currentVaultRelativePath}/${cleanFolderName}` : cleanFolderName;
-
-    try {
-      await Core.createVaultSubfolder(rootVaultHandle, targetSubPath);
-      refreshVaultListing(true);
-      showToast(`Created folder ${cleanFolderName}`);
-    } catch (err) {
-      console.error('[Excali Up] Failed to create folder:', err);
-      showToast('Failed to create folder');
-    }
+        try {
+          await Core.createVaultSubfolder(rootVaultHandle, targetSubPath);
+          refreshVaultListing(true);
+          showToast(`Created folder ${cleanFolderName}`);
+        } catch (err) {
+          console.error('[Excali Up] Failed to create folder:', err);
+          showToast('Failed to create folder');
+        }
+      }
+    });
   }
 
   async function toggleVaultFavorite(e, relativePath) {
@@ -4754,58 +5209,74 @@
   async function renameVaultDrawing(relativePath) {
     if (!rootVaultHandle || !relativePath) return;
     const oldFileName = relativePath.split('/').pop().replace(/\.excalidraw$/, '');
-    const newName = prompt('Rename drawing:', oldFileName);
-    if (!newName || newName === oldFileName) return;
 
-    const cleanNewName = Core.sanitizeFileName(newName, oldFileName);
-    const cleanFileName = cleanNewName.endsWith('.excalidraw') ? cleanNewName : `${cleanNewName}.excalidraw`;
+    showVaultPromptModal({
+      title: 'Rename Drawing',
+      description: `Enter new name for "${oldFileName}":`,
+      placeholder: 'New drawing name...',
+      initialValue: oldFileName,
+      confirmText: 'Rename',
+      onConfirm: async (newName) => {
+        if (!newName || newName === oldFileName) return;
 
-    const segments = relativePath.split('/');
-    segments.pop();
-    const newRelativePath = segments.length > 0 ? `${segments.join('/')}/${cleanFileName}` : cleanFileName;
+        const cleanNewName = Core.sanitizeFileName(newName, oldFileName);
+        const cleanFileName = cleanNewName.endsWith('.excalidraw') ? cleanNewName : `${cleanNewName}.excalidraw`;
 
-    try {
-      const content = await Core.readDrawingFile(rootVaultHandle, relativePath);
-      await Core.writeDrawingFile(rootVaultHandle, newRelativePath, content);
-      await Core.deleteDrawingFile(rootVaultHandle, relativePath);
+        const segments = relativePath.split('/');
+        segments.pop();
+        const newRelativePath = segments.length > 0 ? `${segments.join('/')}/${cleanFileName}` : cleanFileName;
 
-      if (vaultMetadata.favorites.includes(relativePath)) {
-        vaultMetadata.favorites = vaultMetadata.favorites.map(f => f === relativePath ? newRelativePath : f);
+        try {
+          const content = await Core.readDrawingFile(rootVaultHandle, relativePath);
+          await Core.writeDrawingFile(rootVaultHandle, newRelativePath, content);
+          await Core.deleteDrawingFile(rootVaultHandle, relativePath);
+
+          if (vaultMetadata.favorites.includes(relativePath)) {
+            vaultMetadata.favorites = vaultMetadata.favorites.map(f => f === relativePath ? newRelativePath : f);
+          }
+          if (activeDrawingRelativePath === relativePath) {
+            activeDrawingRelativePath = newRelativePath;
+            if (currentApp && currentApp.state) currentApp.state.name = cleanNewName;
+          }
+          await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
+
+          refreshVaultListing(true);
+          showToast(`Renamed to ${cleanFileName}`);
+        } catch (err) {
+          console.error('[Excali Up] Rename failed:', err);
+          showToast('Failed to rename drawing');
+        }
       }
-      if (activeDrawingRelativePath === relativePath) {
-        activeDrawingRelativePath = newRelativePath;
-        if (currentApp && currentApp.state) currentApp.state.name = cleanNewName;
-      }
-      await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
-
-      refreshVaultListing(true);
-      showToast(`Renamed to ${cleanFileName}`);
-    } catch (err) {
-      console.error('[Excali Up] Rename failed:', err);
-      showToast('Failed to rename drawing');
-    }
+    });
   }
 
   async function deleteVaultDrawing(relativePath) {
     if (!rootVaultHandle || !relativePath) return;
     const fileName = relativePath.split('/').pop();
-    if (!confirm(`Delete "${fileName}"? This will remove the file from your disk.`)) return;
 
-    try {
-      await Core.deleteDrawingFile(rootVaultHandle, relativePath);
+    showVaultConfirmModal({
+      title: 'Delete Drawing',
+      message: `Are you sure you want to delete "${fileName}"? This will permanently remove the file from your local disk.`,
+      confirmText: 'Delete Drawing',
+      isDanger: true,
+      onConfirm: async () => {
+        try {
+          await Core.deleteDrawingFile(rootVaultHandle, relativePath);
 
-      vaultMetadata.favorites = vaultMetadata.favorites.filter(f => f !== relativePath);
-      if (activeDrawingRelativePath === relativePath) {
-        activeDrawingRelativePath = null;
+          vaultMetadata.favorites = vaultMetadata.favorites.filter(f => f !== relativePath);
+          if (activeDrawingRelativePath === relativePath) {
+            activeDrawingRelativePath = null;
+          }
+          await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
+
+          refreshVaultListing(true);
+          showToast(`Deleted ${fileName}`);
+        } catch (err) {
+          console.error('[Excali Up] Delete failed:', err);
+          showToast('Failed to delete drawing');
+        }
       }
-      await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
-
-      refreshVaultListing(true);
-      showToast(`Deleted ${fileName}`);
-    } catch (err) {
-      console.error('[Excali Up] Delete failed:', err);
-      showToast('Failed to delete drawing');
-    }
+    });
   }
 
   async function refreshVaultListing(render = true) {
@@ -5006,15 +5477,25 @@
       const menuBtn = row.querySelector('.excaliup-vault-item-menu-btn');
       menuBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        const action = prompt(`Drawing Options for "${cleanDisplayName}":\n1: Rename\n2: Delete\n\nEnter 1 or 2:`);
-        if (action === '1') {
-          renameVaultDrawing(file.path);
-        } else if (action === '2') {
-          deleteVaultDrawing(file.path);
-        }
+        showVaultActionPopover(menuBtn, file);
       });
 
       list.appendChild(row);
+    }
+  }
+
+  function mountVaultButton() {
+    if (!vaultStatusButton) return;
+    const mainMenuTrigger = document.querySelector('[data-testid="main-menu-trigger"], .main-menu-trigger, .dropdown-menu-button');
+    if (mainMenuTrigger && mainMenuTrigger.parentElement) {
+      if (vaultStatusButton.previousElementSibling !== mainMenuTrigger) {
+        mainMenuTrigger.after(vaultStatusButton);
+      }
+    } else {
+      const excalidraw = document.querySelector('.excalidraw');
+      if (excalidraw && !document.body.contains(vaultStatusButton)) {
+        excalidraw.appendChild(vaultStatusButton);
+      }
     }
   }
 
@@ -5040,7 +5521,7 @@
         toggleVaultDrawer();
       }
     });
-    excalidraw.appendChild(vaultStatusButton);
+    mountVaultButton();
 
     vaultDrawerElement = document.createElement('div');
     vaultDrawerElement.id = 'excaliup-vault-drawer';
@@ -5156,6 +5637,11 @@
   }
 
   function removeVaultUI() {
+    closeActiveVaultPopover();
+    if (activeVaultModal) {
+      activeVaultModal.remove();
+      activeVaultModal = null;
+    }
     if (vaultStatusButton) {
       vaultStatusButton.remove();
       vaultStatusButton = null;
@@ -5187,6 +5673,7 @@
     if (!vaultDrawerElement) return;
     vaultDrawerElement.classList.remove('open');
     isVaultDrawerOpen = false;
+    closeActiveVaultPopover();
   }
 
   checkInstance();
