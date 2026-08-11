@@ -1,18 +1,25 @@
 # Excali Up
 
-> **Animated GIFs and SVGs, Custom Motion Flows, and the Iconify Library for Excalidraw**
+> **Animated GIFs and SVGs, Custom Motion Flows, Local Vault Auto-Save, and the Iconify Library for Excalidraw**
 
-**Excali Up 4.0.0** brings animated GIF and SVG playback, per-element line and arrow motion, and a complete Iconify-powered icon library directly into Excalidraw. Browse, filter, favorite, and insert icons without leaving the canvas.
-
-## Version 4.0.0
-
-Version 4 adds the complete Iconify library with global search, pack/category/tag filters, persistent favorites, the `B` keyboard shortcut, canvas-ready icon sizing, and a dedicated animated SVG category. GIF and SVG playback can be controlled independently from the extension popup.
+**Excali Up** brings animated GIF and SVG playback, per-element line and arrow motion, a complete Iconify-powered icon library, and a native Local Vault auto-save file manager directly into Excalidraw.
 
 ---
 
 ## Features
 
-### 1. Complete Iconify Library Integration (New in v4.0)
+### 1. Local Vault & Auto-Save File Manager
+Save and organize all your drawings locally on your computer using the native browser File System Access API:
+* **Direct Local Storage**: Pick any local folder as your vault. Drawings are saved as standard `.excalidraw` files directly on your disk.
+* **Smart Auto-Sync**: Background debounced saving writes scene edits automatically.
+* **In-Canvas Status Indicator**: The `Excaliup-save` button displays live sync state (`Synced`, `Saving...`, `Reconnect Vault`, `Sync Error`).
+* **Slide-over File Manager Drawer**:
+  * **Folder Hierarchy**: Create subfolders and navigate breadcrumbs seamlessly.
+  * **Favorites**: Star favorite drawings to access them instantly.
+  * **Search & Management**: Search drawings, rename, and delete files with ease.
+  * **Instant Scene Switching**: Click any drawing in the manager to switch active canvases immediately.
+
+### 2. Complete Iconify Library Integration
 Search and browse Iconify's open-source icon sets directly inside Excalidraw via a dedicated, glassmorphic toggle sidebar panel:
 * **All available packs**: Browse more than 200 collections, including Material, Lucide, Tabler, Phosphor, Font Awesome, logos, emoji, and thematic sets.
 * **Library filters**: Narrow packs by collection category and tags such as animated, stroke, precise shapes, and padding.
@@ -26,13 +33,13 @@ Search and browse Iconify's open-source icon sets directly inside Excalidraw via
 * **Global search**: Search across more than 300,000 icons, or search within one selected pack.
 * **Dynamic theme matching**: The sidebar automatically transitions between light and dark modes to synchronize with Excalidraw's theme state.
 
-### 2. In-Canvas Tuning Toolbar
+### 3. In-Canvas Tuning Toolbar
 Select any arrow or line element on the canvas to reveal the Excali Up floating toolbar. Assign, toggle, or tune flow parameters on the fly without leaving your canvas:
 * **Opt-in per element**: Animations only apply to elements you explicitly choose.
 * **Independent tuning**: Different lines can have different styles, directions, and speeds simultaneously.
 * **Collapsible tuning panel**: Click the gear icon to reveal slider and pill controls.
 
-### 3. Ten Beautiful Motion Styles
+### 4. Ten Beautiful Motion Styles
 * **Particles**: Smooth dot flows traveling along paths.
 * **Marching Ants**: Stylized dashed borders in motion.
 * **Gradient Pulse**: Premium glowing gradient sweeps that flow like liquid neon energy.
@@ -44,14 +51,14 @@ Select any arrow or line element on the canvas to reveal the Excali Up floating 
 * **Wave**: A traveling sine wave that follows straight and curved elements.
 * **Dual Flow**: Two offset particle lanes moving in opposite directions.
 
-### 4. Granular Element Tuning
+### 5. Granular Element Tuning
 * **Direction**: Forward, Reverse, or Bounce (ping-pong animation).
 * **Speed**: slow, medium, or fast motion factors.
 * **Element Size**: Scale range from 1 to 5.
 * **Spacing**: Gap distance between flow elements from 20px to 120px.
 * **Glow Intensity**: Bloom levels (None, Subtle, Med, Strong).
 
-### 5. Real-time GIF and Animated SVG Playback
+### 6. Real-time GIF and Animated SVG Playback
 * Drag and drop any GIF file to watch it render loops on the board.
 * Insert an animated Iconify SVG and keep its native SMIL or CSS animation playing on the Excalidraw canvas.
 * Enable GIF and animated SVG playback independently from the extension popup dashboard, with GIF speed multipliers of 0.5x, 1x, 1.5x, or 2x.
@@ -64,7 +71,7 @@ Select any arrow or line element on the canvas to reveal the Excali Up floating 
 2. **Open Extensions Page**: In Google Chrome, navigate to `chrome://extensions/`.
 3. **Enable Developer Mode**: Toggle the Developer mode switch in the top-right corner.
 4. **Load Unpacked**: Click Load unpacked and select this directory.
-5. **Start Sketching**: Go to excalidraw.com and draw some arrows or import a GIF!
+5. **Start Sketching**: Go to excalidraw.com and draw some arrows, import a GIF, or connect your local vault!
 
 ---
 
@@ -77,8 +84,9 @@ Excali Up injects a script into the page context (MAIN world) to access the unde
 3. **Animated Media Runtime**: GIF bytes are decoded frame-by-frame with `omggif.js`. Animated SVGs run natively in isolated DOM overlays synchronized with their Excalidraw image elements, avoiding continuous scene redraws while preserving SMIL and CSS timelines.
 4. **Active Canvas Swap**: The static `HTMLImageElement` in Excalidraw's cache is replaced with a single dynamic `HTMLCanvasElement` managed by the extension.
 5. **Floating Toolbar & Canvas Overlay**: The extension overlays a secondary canvas aligned with the interactive canvas. Selecting an element triggers the DOM injection of the floating toolbar panel. Real-time offsets are recalculated per frame on the overlay.
-6. **State Persistence**: Element settings and Iconify favorites are persisted in `localStorage`. They are automatically loaded when refreshing the page. Deleted elements are cleaned up from the animation store.
-7. **Iconify Icon Library**: A locally packaged Iconify web component renders previews, while Iconify's collection, search, and SVG APIs provide pack metadata, filtered results, and clean vectors for copy and drag operations.
+6. **Local Vault System**: Stores directory handles in IndexedDB, automatically serializes canvas scenes to valid `.excalidraw` schema files, and provides an in-memory & file system navigator.
+7. **State Persistence**: Element settings and Iconify favorites are persisted in `localStorage`. They are automatically loaded when refreshing the page. Deleted elements are cleaned up from the animation store.
+8. **Iconify Icon Library**: A locally packaged Iconify web component renders previews, while Iconify's collection, search, and SVG APIs provide pack metadata, filtered results, and clean vectors for copy and drag operations.
 
 ---
 

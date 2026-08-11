@@ -439,9 +439,322 @@
     }
   }
 
+  // --- Local Vault & Persistence Engine ---
+
+  const VAULT_DB_NAME = 'excaliup_vault_db';
+  const VAULT_STORE_NAME = 'handles';
+  const ROOT_HANDLE_KEY = 'root_vault_directory';
+  const VAULT_METADATA_FILENAME = '.excaliup.json';
+
+  const DEFAULT_VAULT_METADATA = Object.freeze({
+    version: 1,
+    favorites: [],
+    lastOpenedFile: null,
+    activeFilter: 'all'
+  });
+
+  function openVaultDatabase() {
+    if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(VAULT_DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(VAULT_STORE_NAME)) {
+          db.createObjectStore(VAULT_STORE_NAME);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function getStoredVaultHandle() {
+    const db = await openVaultDatabase();
+    if (!db) return null;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(VAULT_STORE_NAME, 'readonly');
+      const store = tx.objectStore(VAULT_STORE_NAME);
+      const req = store.get(ROOT_HANDLE_KEY);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function setStoredVaultHandle(handle) {
+    const db = await openVaultDatabase();
+    if (!db) return;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(VAULT_STORE_NAME, 'readwrite');
+      const store = tx.objectStore(VAULT_STORE_NAME);
+      const req = store.put(handle, ROOT_HANDLE_KEY);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function clearStoredVaultHandle() {
+    const db = await openVaultDatabase();
+    if (!db) return;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(VAULT_STORE_NAME, 'readwrite');
+      const store = tx.objectStore(VAULT_STORE_NAME);
+      const req = store.delete(ROOT_HANDLE_KEY);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function verifyHandlePermission(handle, readWrite = true) {
+    if (!handle) return false;
+    const options = { mode: readWrite ? 'readwrite' : 'read' };
+    if (typeof handle.queryPermission !== 'function') return true;
+    try {
+      const permission = await handle.queryPermission(options);
+      return permission === 'granted';
+    } catch {
+      return false;
+    }
+  }
+
+  async function requestHandlePermission(handle, readWrite = true) {
+    if (!handle) return false;
+    const options = { mode: readWrite ? 'readwrite' : 'read' };
+    if (typeof handle.requestPermission !== 'function') return true;
+    try {
+      const permission = await handle.requestPermission(options);
+      return permission === 'granted';
+    } catch {
+      return false;
+    }
+  }
+
+  function sanitizeFileName(name, fallback = 'untitled') {
+    if (typeof name !== 'string') return fallback;
+    const clean = name.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ');
+    return clean || fallback;
+  }
+
+  function normalizeVaultPath(path) {
+    if (!path) return '';
+    return String(path).replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+|\/+$/g, '');
+  }
+
+  async function resolveDirectoryHandle(rootHandle, relativePath = '', create = false) {
+    const cleanPath = normalizeVaultPath(relativePath);
+    if (!cleanPath) return rootHandle;
+    const segments = cleanPath.split('/').filter(Boolean);
+    let current = rootHandle;
+    for (const segment of segments) {
+      current = await current.getDirectoryHandle(segment, { create });
+    }
+    return current;
+  }
+
+  async function scanVaultDirectory(rootHandle, currentRelativePath = '') {
+    if (!rootHandle) return { currentPath: '', folders: [], files: [] };
+    const cleanCurrent = normalizeVaultPath(currentRelativePath);
+    const targetDir = await resolveDirectoryHandle(rootHandle, cleanCurrent, false);
+    const folders = [];
+    const files = [];
+
+    for await (const [name, handle] of targetDir.entries()) {
+      if (name.startsWith('.')) continue;
+      const itemRelPath = cleanCurrent ? `${cleanCurrent}/${name}` : name;
+      if (handle.kind === 'directory') {
+        folders.push({
+          name,
+          path: itemRelPath,
+          handle
+        });
+      } else if (handle.kind === 'file' && (name.endsWith('.excalidraw') || name.endsWith('.excalidraw.json'))) {
+        let size = 0;
+        let lastModified = Date.now();
+        try {
+          const fileData = await handle.getFile();
+          size = fileData.size;
+          lastModified = fileData.lastModified;
+        } catch {}
+        files.push({
+          name,
+          path: itemRelPath,
+          lastModified,
+          size,
+          handle
+        });
+      }
+    }
+
+    folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    files.sort((a, b) => (b.lastModified || 0) - (a.lastModified || 0));
+
+    return {
+      currentPath: cleanCurrent,
+      folders,
+      files
+    };
+  }
+
+  async function scanAllVaultDrawings(rootHandle, currentPath = '') {
+    if (!rootHandle) return [];
+    const cleanCurrent = normalizeVaultPath(currentPath);
+    const targetDir = await resolveDirectoryHandle(rootHandle, cleanCurrent, false);
+    const results = [];
+
+    for await (const [name, handle] of targetDir.entries()) {
+      if (name.startsWith('.')) continue;
+      const itemPath = cleanCurrent ? `${cleanCurrent}/${name}` : name;
+      if (handle.kind === 'directory') {
+        const subResults = await scanAllVaultDrawings(rootHandle, itemPath);
+        results.push(...subResults);
+      } else if (handle.kind === 'file' && (name.endsWith('.excalidraw') || name.endsWith('.excalidraw.json'))) {
+        let size = 0;
+        let lastModified = Date.now();
+        try {
+          const fileData = await handle.getFile();
+          size = fileData.size;
+          lastModified = fileData.lastModified;
+        } catch {}
+        results.push({
+          name,
+          path: itemPath,
+          lastModified,
+          size
+        });
+      }
+    }
+    return results;
+  }
+
+  function normalizeVaultMetadata(source) {
+    const data = source && typeof source === 'object' ? source : {};
+    const favorites = Array.isArray(data.favorites)
+      ? [...new Set(data.favorites.filter(f => typeof f === 'string').map(normalizeVaultPath))]
+      : [];
+    return {
+      version: 1,
+      favorites,
+      lastOpenedFile: typeof data.lastOpenedFile === 'string' ? normalizeVaultPath(data.lastOpenedFile) : null,
+      activeFilter: data.activeFilter === 'favorites' ? 'favorites' : 'all'
+    };
+  }
+
+  async function readVaultMetadata(rootHandle) {
+    if (!rootHandle) return normalizeVaultMetadata(null);
+    try {
+      const fileHandle = await rootHandle.getFileHandle(VAULT_METADATA_FILENAME);
+      const file = await fileHandle.getFile();
+      const text = await file.text();
+      return normalizeVaultMetadata(JSON.parse(text));
+    } catch {
+      return normalizeVaultMetadata(null);
+    }
+  }
+
+  async function writeVaultMetadata(rootHandle, metadata) {
+    if (!rootHandle) return;
+    try {
+      const normalized = normalizeVaultMetadata(metadata);
+      const fileHandle = await rootHandle.getFileHandle(VAULT_METADATA_FILENAME, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(JSON.stringify(normalized, null, 2));
+      await writable.close();
+    } catch (err) {
+      console.warn('[Excali Up] Failed to write vault metadata:', err);
+    }
+  }
+
+  async function readDrawingFile(rootHandle, relativeFilePath) {
+    const cleanPath = normalizeVaultPath(relativeFilePath);
+    const segments = cleanPath.split('/');
+    const fileName = segments.pop();
+    const dirPath = segments.join('/');
+    const dirHandle = await resolveDirectoryHandle(rootHandle, dirPath, false);
+    const fileHandle = await dirHandle.getFileHandle(fileName, { create: false });
+    const file = await fileHandle.getFile();
+    return await file.text();
+  }
+
+  async function writeDrawingFile(rootHandle, relativeFilePath, content) {
+    const cleanPath = normalizeVaultPath(relativeFilePath);
+    const segments = cleanPath.split('/');
+    const fileName = segments.pop();
+    const dirPath = segments.join('/');
+    const dirHandle = await resolveDirectoryHandle(rootHandle, dirPath, true);
+    const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(content);
+    await writable.close();
+    return fileHandle;
+  }
+
+  async function deleteDrawingFile(rootHandle, relativeFilePath) {
+    const cleanPath = normalizeVaultPath(relativeFilePath);
+    const segments = cleanPath.split('/');
+    const fileName = segments.pop();
+    const dirPath = segments.join('/');
+    const dirHandle = await resolveDirectoryHandle(rootHandle, dirPath, false);
+    await dirHandle.removeEntry(fileName);
+  }
+
+  async function createVaultSubfolder(rootHandle, relativePath) {
+    const cleanPath = normalizeVaultPath(relativePath);
+    if (!cleanPath) return null;
+    return await resolveDirectoryHandle(rootHandle, cleanPath, true);
+  }
+
+  function serializeExcalidrawScene({ elements = [], appState = {}, files = {} }) {
+    const cleanElements = Array.isArray(elements) ? elements : [];
+    const cleanAppState = {
+      viewBackgroundColor: (appState && appState.viewBackgroundColor) || '#ffffff',
+      gridSize: (appState && appState.gridSize) || null,
+      name: (appState && appState.name) || 'Untitled'
+    };
+
+    const cleanFiles = {};
+    if (files && typeof files === 'object') {
+      for (const [id, f] of Object.entries(files)) {
+        if (f && f.dataURL) {
+          cleanFiles[id] = {
+            id: f.id || id,
+            dataURL: f.dataURL,
+            mimeType: f.mimeType,
+            created: f.created || Date.now(),
+            lastRetrieved: f.lastRetrieved || Date.now()
+          };
+        }
+      }
+    }
+
+    return JSON.stringify({
+      type: 'excalidraw',
+      version: 2,
+      source: 'https://excalidraw.com',
+      elements: cleanElements,
+      appState: cleanAppState,
+      files: cleanFiles
+    }, null, 2);
+  }
+
+  function parseExcalidrawScene(rawContent) {
+    if (!rawContent) return null;
+    try {
+      const data = typeof rawContent === 'string' ? JSON.parse(rawContent) : rawContent;
+      if (!data || typeof data !== 'object') return null;
+      return {
+        elements: Array.isArray(data.elements) ? data.elements : [],
+        appState: data.appState && typeof data.appState === 'object' ? data.appState : {},
+        files: data.files && typeof data.files === 'object' ? data.files : {}
+      };
+    } catch (err) {
+      console.error('[Excali Up] Failed to parse excalidraw file:', err);
+      return null;
+    }
+  }
+
   return Object.freeze({
     DEFAULT_SETTINGS,
     DEFAULT_ELEMENT_CONFIG,
+    DEFAULT_VAULT_METADATA,
     normalizeSettings,
     normalizeElementConfig,
     getPathPoints,
@@ -454,6 +767,27 @@
     isAnimatedSvgMarkup,
     sizeSvgForCanvas,
     getSvgIntrinsicSize,
-    AdaptiveFrameBudget
+    AdaptiveFrameBudget,
+    // Vault & Storage APIs
+    openVaultDatabase,
+    getStoredVaultHandle,
+    setStoredVaultHandle,
+    clearStoredVaultHandle,
+    verifyHandlePermission,
+    requestHandlePermission,
+    sanitizeFileName,
+    normalizeVaultPath,
+    resolveDirectoryHandle,
+    scanVaultDirectory,
+    scanAllVaultDrawings,
+    normalizeVaultMetadata,
+    readVaultMetadata,
+    writeVaultMetadata,
+    readDrawingFile,
+    writeDrawingFile,
+    deleteDrawingFile,
+    createVaultSubfolder,
+    serializeExcalidrawScene,
+    parseExcalidrawScene
   });
 });

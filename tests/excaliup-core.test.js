@@ -156,3 +156,145 @@ test('adaptive frame budget degrades and recovers with hysteresis', () => {
   budget.record(401, 1, 20);
   assert.equal(budget.mode, 'full');
 });
+
+test('sanitizes file and folder names safely', () => {
+  assert.equal(core.sanitizeFileName('my/cool:diagram*?.excalidraw'), 'my-cool-diagram--.excalidraw');
+  assert.equal(core.sanitizeFileName('   spaced name   '), 'spaced name');
+  assert.equal(core.sanitizeFileName('', 'fallback-draw'), 'fallback-draw');
+  assert.equal(core.sanitizeFileName(null, 'default'), 'default');
+});
+
+test('normalizes vault relative paths', () => {
+  assert.equal(core.normalizeVaultPath('\\subfolder\\nested\\file.excalidraw'), 'subfolder/nested/file.excalidraw');
+  assert.equal(core.normalizeVaultPath('///root///nested///'), 'root/nested');
+  assert.equal(core.normalizeVaultPath(''), '');
+});
+
+test('serializes and parses Excalidraw scenes compliant with standard .excalidraw JSON', () => {
+  const scene = {
+    elements: [{ id: 'rect1', type: 'rectangle', x: 10, y: 20 }],
+    appState: { viewBackgroundColor: '#1e1e1e', name: 'Architecture' },
+    files: {
+      'file-1': { id: 'file-1', dataURL: 'data:image/svg+xml;base64,test', mimeType: 'image/svg+xml' }
+    }
+  };
+
+  const serialized = core.serializeExcalidrawScene(scene);
+  const parsedJson = JSON.parse(serialized);
+  assert.equal(parsedJson.type, 'excalidraw');
+  assert.equal(parsedJson.version, 2);
+  assert.equal(parsedJson.elements.length, 1);
+  assert.equal(parsedJson.appState.viewBackgroundColor, '#1e1e1e');
+  assert.equal(parsedJson.files['file-1'].id, 'file-1');
+
+  const parsedScene = core.parseExcalidrawScene(serialized);
+  assert.deepEqual(parsedScene.elements, scene.elements);
+  assert.equal(parsedScene.appState.name, 'Architecture');
+  assert.equal(parsedScene.files['file-1'].mimeType, 'image/svg+xml');
+
+  assert.equal(core.parseExcalidrawScene('invalid-json'), null);
+  assert.equal(core.parseExcalidrawScene(null), null);
+});
+
+test('normalizes vault metadata and deduplicates favorites', () => {
+  const metadata = core.normalizeVaultMetadata({
+    favorites: ['sub/draw1.excalidraw', 'sub/draw1.excalidraw', '\\sub\\draw2.excalidraw', 123],
+    lastOpenedFile: '\\sub\\draw1.excalidraw',
+    activeFilter: 'favorites'
+  });
+
+  assert.deepEqual(metadata.favorites, ['sub/draw1.excalidraw', 'sub/draw2.excalidraw']);
+  assert.equal(metadata.lastOpenedFile, 'sub/draw1.excalidraw');
+  assert.equal(metadata.activeFilter, 'favorites');
+});
+
+test('scans mock directory structure and resolves drawing files', async () => {
+  function createMockDir(name, entries = {}) {
+    return {
+      kind: 'directory',
+      name,
+      entries: async function* () {
+        for (const [key, val] of Object.entries(entries)) {
+          yield [key, val];
+        }
+      },
+      getDirectoryHandle: async (subName, { create } = {}) => {
+        if (!entries[subName]) {
+          if (create) {
+            entries[subName] = createMockDir(subName);
+          } else {
+            throw new Error(`Directory ${subName} not found`);
+          }
+        }
+        return entries[subName];
+      },
+      getFileHandle: async (fileName, { create } = {}) => {
+        if (!entries[fileName]) {
+          if (create) {
+            entries[fileName] = {
+              kind: 'file',
+              name: fileName,
+              content: '',
+              getFile: async () => ({
+                size: 100,
+                lastModified: 1000,
+                text: async () => entries[fileName].content
+              }),
+              createWritable: async () => ({
+                write: async (data) => { entries[fileName].content = data; },
+                close: async () => {}
+              })
+            };
+          } else {
+            throw new Error(`File ${fileName} not found`);
+          }
+        }
+        return entries[fileName];
+      },
+      removeEntry: async (entryName) => {
+        delete entries[entryName];
+      }
+    };
+  }
+
+  const mockRoot = createMockDir('root', {
+    'subfolder': createMockDir('subfolder', {
+      'nested.excalidraw': {
+        kind: 'file',
+        name: 'nested.excalidraw',
+        content: '{"type":"excalidraw","elements":[]}',
+        getFile: async () => ({ size: 50, lastModified: 2000, text: async () => '{"type":"excalidraw","elements":[]}' })
+      }
+    }),
+    'root-draw.excalidraw': {
+      kind: 'file',
+      name: 'root-draw.excalidraw',
+      content: '{"type":"excalidraw","elements":[]}',
+      getFile: async () => ({ size: 80, lastModified: 3000, text: async () => '{"type":"excalidraw","elements":[]}' })
+    },
+    'ignored.txt': {
+      kind: 'file',
+      name: 'ignored.txt',
+      getFile: async () => ({ size: 10, lastModified: 1000 })
+    }
+  });
+
+  const rootScan = await core.scanVaultDirectory(mockRoot, '');
+  assert.equal(rootScan.folders.length, 1);
+  assert.equal(rootScan.folders[0].name, 'subfolder');
+  assert.equal(rootScan.files.length, 1);
+  assert.equal(rootScan.files[0].name, 'root-draw.excalidraw');
+
+  const allDrawings = await core.scanAllVaultDrawings(mockRoot, '');
+  assert.equal(allDrawings.length, 2);
+
+  await core.writeDrawingFile(mockRoot, 'subfolder/new.excalidraw', 'test-content');
+  const readContent = await core.readDrawingFile(mockRoot, 'subfolder/new.excalidraw');
+  assert.equal(readContent, 'test-content');
+
+  await core.deleteDrawingFile(mockRoot, 'subfolder/new.excalidraw');
+  await assert.rejects(async () => {
+    await core.readDrawingFile(mockRoot, 'subfolder/new.excalidraw');
+  });
+});
+
