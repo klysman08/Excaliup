@@ -1,8 +1,12 @@
 # Excali Up
 
-> **Animated GIFs and SVGs, Custom Motion Flows, Local Vault Auto-Save, and the Iconify Library for Excalidraw**
+[![Version](https://img.shields.io/badge/version-5.0.0-00E5FF.svg)](manifest.json)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Chrome Web Store](https://img.shields.io/badge/Chrome_Web_Store-Excali_Up-4285F4?logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/kkdemmcbedpinbabaddejkdgkmabbbbm)
 
-**Excali Up** brings animated GIF and SVG playback, per-element line and arrow motion, a complete Iconify-powered icon library, and a native Local Vault auto-save file manager directly into Excalidraw.
+> **Local File System Vault with Auto-Save, Animated GIFs and SVGs, Motion Flows, and the Complete Iconify Library for Excalidraw**
+
+**Excali Up** brings a native Local Vault auto-save file manager, animated GIF and SVG playback, per-element line and arrow motion flows, and a complete Iconify-powered icon library directly into Excalidraw.
 
 ---
 
@@ -10,14 +14,15 @@
 
 ### 1. Local Vault & Auto-Save File Manager
 Save and organize all your drawings locally on your computer using the native browser File System Access API:
-* **Direct Local Storage**: Pick any local folder as your vault. Drawings are saved as standard `.excalidraw` files directly on your disk.
-* **Smart Auto-Sync**: Background debounced saving writes scene edits automatically.
-* **In-Canvas Status Indicator**: The `Excaliup-save` button displays live sync state (`Synced`, `Saving...`, `Reconnect Vault`, `Sync Error`).
+* **Direct Local Storage**: Pick any local folder on your disk as your drawing vault. Drawings are saved as standard `.excalidraw` JSON files.
+* **Smart Background Auto-Sync**: Debounced background saving (1.2s threshold) persists scene edits automatically without manual saves.
+* **In-Canvas Status Indicator**: The `Excaliup-save` button in the canvas top bar displays live sync state (`Synced`, `Saving...`, `Reconnect Vault`, `Sync Error`).
 * **Slide-over File Manager Drawer**:
-  * **Folder Hierarchy**: Create subfolders and navigate breadcrumbs seamlessly.
-  * **Favorites**: Star favorite drawings to access them instantly.
-  * **Search & Management**: Search drawings, rename, and delete files with ease.
-  * **Instant Scene Switching**: Click any drawing in the manager to switch active canvases immediately.
+  * **Folder Hierarchy & Breadcrumbs**: Create subfolders, navigate breadcrumbs, and organize drawings across directories.
+  * **Favorites & Starred Drawings**: Star favorite drawings to access them instantly from a unified Starred view.
+  * **Search & Management**: Search drawings instantly across folders, rename files, and delete items with confirmation.
+  * **Drag-and-Drop Relocation**: Move drawings between folders or drag onto breadcrumb ancestor links.
+  * **Instant Scene Switching**: Click any drawing in the drawer to seamlessly load and switch active canvases.
 
 ### 2. Complete Iconify Library Integration
 Search and browse Iconify's open-source icon sets directly inside Excalidraw via a dedicated, glassmorphic toggle sidebar panel:
@@ -67,11 +72,17 @@ Select any arrow or line element on the canvas to reveal the Excali Up floating 
 
 ## Installation
 
-1. **Download the source code**: Clone this repository or extract it from a ZIP.
+### Option A: Install from Chrome Web Store (Recommended)
+1. Visit the [Excali Up Chrome Web Store page](https://chromewebstore.google.com/detail/kkdemmcbedpinbabaddejkdgkmabbbbm).
+2. Click **Add to Chrome**.
+3. Navigate to [excalidraw.com](https://excalidraw.com) and start sketching!
+
+### Option B: Load Unpacked (Development)
+1. **Download the source code**: Clone this repository (`git clone https://github.com/klysman08/ExcaliGif.git`) or download the release ZIP.
 2. **Open Extensions Page**: In Google Chrome, navigate to `chrome://extensions/`.
 3. **Enable Developer Mode**: Toggle the Developer mode switch in the top-right corner.
-4. **Load Unpacked**: Click Load unpacked and select this directory.
-5. **Start Sketching**: Go to excalidraw.com and draw some arrows, import a GIF, or connect your local vault!
+4. **Load Unpacked**: Click **Load unpacked** and select the repository root directory.
+5. **Start Sketching**: Go to [excalidraw.com](https://excalidraw.com), connect your local vault folder, import GIFs, browse Iconify icons, or draw flowing animated arrows!
 
 ---
 

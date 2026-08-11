@@ -10,7 +10,7 @@ test('Iconify is packaged locally and the picker supports all collections', () =
   const injectSource = fs.readFileSync(path.join(root, 'inject.js'), 'utf8');
 
   assert.ok(mainWorldScript);
-  assert.equal(manifest.version, '4.0.0');
+  assert.equal(manifest.version, '5.0.0');
   assert.equal(mainWorldScript.js[0], 'vendor/iconify-icon.min.js');
   assert.ok(fs.existsSync(path.join(root, 'vendor', 'iconify-icon.min.js')));
   assert.match(injectSource, /https:\/\/api\.iconify\.design\/collections/);

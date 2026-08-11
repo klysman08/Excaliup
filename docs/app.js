@@ -35,6 +35,15 @@ const ICONIFY_ICONS = [
   { name: "SVG Rotation", svg: '<svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="2.5s" repeatCount="indefinite"/></path></svg>', category: "animated" }
 ];
 
+// Simulated Local Vault Drawings
+const VAULT_DATA = [
+  { id: "d1", name: "System Architecture.excalidraw", folder: "Diagrams", starred: true, icon: "📐" },
+  { id: "d2", name: "Sprint Workflow.excalidraw", folder: "Diagrams", starred: true, icon: "🔄" },
+  { id: "d3", name: "Retro UI Mockup.excalidraw", folder: "Diagrams", starred: false, icon: "👾" },
+  { id: "d4", name: "Database Schema.excalidraw", folder: "Diagrams", starred: false, icon: "🗄️" },
+  { id: "d5", name: "Onboarding Flow.excalidraw", folder: "Root", starred: true, icon: "🚀" }
+];
+
 document.addEventListener('DOMContentLoaded', () => {
   // Global State
   const state = {
@@ -51,7 +60,12 @@ document.addEventListener('DOMContentLoaded', () => {
     nextId: 1,
     favorites: [],      // Starred Iconify icons
     currentTab: 'all',  // Iconify tab: all, animated, favorites
-    iconifyOpen: false  // Is Iconify sidebar open
+    iconifyOpen: false, // Is Iconify sidebar open
+    vaultOpen: false,   // Is Local Vault drawer open
+    vaultTab: 'files',  // Vault tab: files, starred
+    currentFolder: 'Diagrams',
+    activeDrawingId: 'd1',
+    vaultItems: [...VAULT_DATA]
   };
 
   // Elements
@@ -81,7 +95,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const demoBtn = document.getElementById('demoBtn');
   const themeToggle = document.getElementById('theme-toggle');
 
-  // New Iconify elements
+  // Iconify elements
   const btnToggleIconify = document.getElementById('btnToggleIconify');
   const simIconifyPanel = document.getElementById('simIconifyPanel');
   const simIconifyClose = document.getElementById('simIconifyClose');
@@ -90,6 +104,35 @@ document.addEventListener('DOMContentLoaded', () => {
   const simGifSpeedPills = document.getElementById('simGifSpeedPills');
   const soundToggle = document.getElementById('sound-toggle');
   const volumeSlider = document.getElementById('volume-slider');
+
+  // Local Vault elements
+  const btnToggleVault = document.getElementById('btnToggleVault');
+  const simVaultPanel = document.getElementById('simVaultPanel');
+  const simVaultClose = document.getElementById('simVaultClose');
+  const simVaultList = document.getElementById('simVaultList');
+  const tabVaultFiles = document.getElementById('tabVaultFiles');
+  const tabVaultStarred = document.getElementById('tabVaultStarred');
+  const crumbRoot = document.getElementById('crumbRoot');
+  const crumbCurrent = document.getElementById('crumbCurrent');
+  const simNewDrawingBtn = document.getElementById('simNewDrawingBtn');
+  const simNewFolderBtn = document.getElementById('simNewFolderBtn');
+
+  // Auto-Save Simulator Logic
+  let simAutoSaveTimer = null;
+  const triggerSimAutoSave = () => {
+    const dot = document.getElementById('simSaveDot');
+    const label = document.getElementById('simSaveStatusText');
+    if (!dot || !label) return;
+    
+    clearTimeout(simAutoSaveTimer);
+    dot.classList.add('saving');
+    label.textContent = 'Saving...';
+    
+    simAutoSaveTimer = setTimeout(() => {
+      dot.classList.remove('saving');
+      label.textContent = 'Synced';
+    }, 1200);
+  };
 
   // SOUND HOOKS FOR STANDARD INTERACTION
   const addSoundHooks = () => {
@@ -557,6 +600,7 @@ document.addEventListener('DOMContentLoaded', () => {
     canvasBoard.appendChild(wrapper);
     playSuccess();
     checkEmptyState();
+    triggerSimAutoSave();
   };
 
   // Add an SVG element from Iconify
@@ -595,6 +639,7 @@ document.addEventListener('DOMContentLoaded', () => {
     canvasBoard.appendChild(wrapper);
     playSuccess();
     checkEmptyState();
+    triggerSimAutoSave();
   };
 
   // Add a Vector Arrow to the simulated board
@@ -641,6 +686,7 @@ document.addEventListener('DOMContentLoaded', () => {
     canvasBoard.appendChild(wrapper);
     playSuccess();
     checkEmptyState();
+    triggerSimAutoSave();
   };
 
   // Clear Canvas Board action
@@ -651,6 +697,7 @@ document.addEventListener('DOMContentLoaded', () => {
     onSelectionChanged();
     playError();
     checkEmptyState();
+    triggerSimAutoSave();
   });
 
   // Select item samples triggers
@@ -1054,8 +1101,168 @@ document.addEventListener('DOMContentLoaded', () => {
     addSoundHooks();
   };
 
+  // Local Vault Drawer logic
+  const toggleVaultPanel = () => {
+    state.vaultOpen = !state.vaultOpen;
+    playToggle(state.vaultOpen);
+    if (state.vaultOpen) {
+      simVaultPanel.classList.add('visible');
+      renderVaultList();
+    } else {
+      simVaultPanel.classList.remove('visible');
+    }
+  };
+
+  if (btnToggleVault) {
+    btnToggleVault.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleVaultPanel();
+    });
+  }
+
+  if (simVaultClose) {
+    simVaultClose.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.vaultOpen = false;
+      simVaultPanel.classList.remove('visible');
+      playToggle(false);
+    });
+  }
+
+  if (crumbRoot) {
+    crumbRoot.addEventListener('click', (e) => {
+      e.stopPropagation();
+      playSelect();
+      state.currentFolder = 'Root';
+      renderVaultList();
+    });
+  }
+
+  if (tabVaultFiles) {
+    tabVaultFiles.addEventListener('click', (e) => {
+      e.stopPropagation();
+      playSelect();
+      state.vaultTab = 'files';
+      tabVaultFiles.classList.add('active');
+      if (tabVaultStarred) tabVaultStarred.classList.remove('active');
+      renderVaultList();
+    });
+  }
+
+  if (tabVaultStarred) {
+    tabVaultStarred.addEventListener('click', (e) => {
+      e.stopPropagation();
+      playSelect();
+      state.vaultTab = 'starred';
+      tabVaultStarred.classList.add('active');
+      if (tabVaultFiles) tabVaultFiles.classList.remove('active');
+      renderVaultList();
+    });
+  }
+
+  if (simNewDrawingBtn) {
+    simNewDrawingBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      playSelect();
+      const newName = `Drawing ${state.vaultItems.length + 1}.excalidraw`;
+      const newItem = {
+        id: `d${Date.now()}`,
+        name: newName,
+        folder: state.currentFolder,
+        starred: false,
+        icon: "🎨"
+      };
+      state.vaultItems.push(newItem);
+      state.activeDrawingId = newItem.id;
+      playSuccess();
+      triggerSimAutoSave();
+      renderVaultList();
+    });
+  }
+
+  if (simNewFolderBtn) {
+    simNewFolderBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      playSelect();
+      const folderName = prompt("Enter folder name:", "New Folder");
+      if (folderName && folderName.trim()) {
+        state.currentFolder = folderName.trim();
+        const placeholderItem = {
+          id: `d${Date.now()}`,
+          name: "Untitled.excalidraw",
+          folder: state.currentFolder,
+          starred: false,
+          icon: "📄"
+        };
+        state.vaultItems.push(placeholderItem);
+        state.activeDrawingId = placeholderItem.id;
+        playSuccess();
+        triggerSimAutoSave();
+        renderVaultList();
+      }
+    });
+  }
+
+  const renderVaultList = () => {
+    if (!simVaultList) return;
+    simVaultList.innerHTML = '';
+
+    if (crumbCurrent) {
+      crumbCurrent.textContent = state.currentFolder;
+    }
+
+    const currentFolderFiles = state.vaultItems.filter(i => i.folder === state.currentFolder);
+    const starredFiles = state.vaultItems.filter(i => i.starred);
+
+    if (tabVaultFiles) tabVaultFiles.textContent = `Files (${currentFolderFiles.length})`;
+    if (tabVaultStarred) tabVaultStarred.textContent = `⭐ Starred (${starredFiles.length})`;
+
+    const items = state.vaultTab === 'starred' ? starredFiles : currentFolderFiles;
+
+    if (items.length === 0) {
+      simVaultList.innerHTML = `<div style="text-align:center; font-size:0.75rem; color:var(--color-text-muted); padding:15px 0;">No drawings here</div>`;
+      return;
+    }
+
+    items.forEach(item => {
+      const el = document.createElement('div');
+      el.className = `sim-vault-item ${state.activeDrawingId === item.id ? 'active' : ''}`;
+      
+      const left = document.createElement('div');
+      left.className = 'sim-vault-item-left';
+      left.innerHTML = `<span>${item.icon}</span> <span>${item.name}</span>`;
+
+      const star = document.createElement('span');
+      star.className = `sim-vault-star ${item.starred ? 'active' : ''}`;
+      star.innerHTML = '★';
+      star.title = item.starred ? 'Remove from Starred' : 'Add to Starred';
+
+      star.addEventListener('click', (e) => {
+        e.stopPropagation();
+        item.starred = !item.starred;
+        playToggle(true);
+        renderVaultList();
+      });
+
+      el.appendChild(left);
+      el.appendChild(star);
+
+      el.addEventListener('click', () => {
+        state.activeDrawingId = item.id;
+        playSuccess();
+        triggerSimAutoSave();
+        renderVaultList();
+      });
+
+      simVaultList.appendChild(el);
+    });
+
+    addSoundHooks();
+  };
+
   // Init UI
   updateSimulatorUI();
+  renderVaultList();
   addSoundHooks();
 
   const observer = new MutationObserver(() => {

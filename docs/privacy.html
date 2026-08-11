@@ -77,47 +77,48 @@
     <article class="privacy-card">
       <span class="pixel-badge">Chrome Extension</span>
       <h1>Privacy Policy</h1>
-      <p class="privacy-date"><strong>Effective date:</strong> July 3, 2026</p>
+      <p class="privacy-date"><strong>Effective date:</strong> August 11, 2026 (Version 5.0)</p>
 
       <p>
-        Excali Up enhances Excalidraw by playing user-added animated GIFs and rendering customizable motion effects on selected lines and arrows. This policy explains how the extension handles data.
+        Excali Up enhances Excalidraw with local file system vault auto-saving, animated GIF and SVG playback, path motion effects, and the complete Iconify library. This policy explains how the extension handles data.
       </p>
 
       <div class="privacy-note">
-        <strong>Short version:</strong> Excali Up does not collect, transmit, sell, or share personal information. Canvas data and animation settings are processed locally in your browser.
+        <strong>Short version:</strong> Excali Up does not collect, transmit, sell, or share personal information. All drawing data, local vault files, animation settings, and directory handles are processed strictly on your device.
       </div>
 
       <h2>Data handled by the extension</h2>
       <p>To provide its visible features, Excali Up locally accesses:</p>
       <ul>
-        <li>Excalidraw canvas elements, including selected lines, arrows, element identifiers, and geometry.</li>
-        <li>GIF image data added by the user to an Excalidraw canvas.</li>
-        <li>Animation preferences such as style, speed, direction, size, spacing, glow, and playback state.</li>
+        <li><strong>Local File System Vault:</strong> User-selected directory handles via the browser's native File System Access API, storing directory references in client-side IndexedDB to read, write, and auto-sync <code>.excalidraw</code> drawing files directly on the user's local disk.</li>
+        <li><strong>Canvas Scenes:</strong> Excalidraw canvas elements, including selected lines, arrows, element identifiers, geometry, and app state.</li>
+        <li><strong>Media & Icons:</strong> GIF and SVG image data added by the user to an Excalidraw canvas, along with Iconify icon searches and favorites.</li>
+        <li><strong>Animation & App Preferences:</strong> Preferences such as style, speed, direction, size, spacing, glow, vault metadata, and playback state.</li>
       </ul>
-      <p>This information is used only to render GIF playback and motion effects inside Excalidraw.</p>
+      <p>This information is used solely to provide local vault auto-saving, GIF/SVG playback, and motion effects inside Excalidraw.</p>
 
       <h2>Data collection and transmission</h2>
       <p>
-        The developer does not receive canvas content, GIF files, browsing history, usage analytics, personal information, or extension settings. Excali Up has no developer-operated data server, advertising service, analytics service, account system, or tracking technology.
+        The developer does not receive drawing contents, file system paths, GIF files, browsing history, usage analytics, personal information, or extension settings. Excali Up operates zero developer-managed servers, advertising networks, analytics trackers, or account systems.
       </p>
       <p>
-        If Excalidraw provides a GIF through a URL, Excali Up may request that GIF data solely so the browser can decode and display it. The data is processed locally and is not sent to the Excali Up developer.
+        When searching Iconify icons or loading external GIF URLs, requests are performed directly from the browser to public APIs solely to retrieve the requested vector or image data for local display.
       </p>
 
-      <h2>Local storage</h2>
+      <h2>Local storage & IndexedDB</h2>
       <p>
-        Excali Up stores extension preferences and per-element animation settings in browser local storage associated with Excalidraw. This data remains on the user's device. Users can remove it by clearing site data for <code>excalidraw.com</code> in Chrome.
+        Excali Up stores extension preferences in browser local storage and directory handles in browser IndexedDB associated with <code>excalidraw.com</code>. This data remains on the user's device. Users can remove it at any time by clearing site data for <code>excalidraw.com</code> in Chrome.
       </p>
 
       <h2>Permissions</h2>
       <ul>
-        <li><strong>activeTab:</strong> used only when the user opens the popup to confirm the active tab is Excalidraw and exchange extension status and settings.</li>
-        <li><strong>Host access to excalidraw.com:</strong> required to integrate with the Excalidraw canvas and render the requested animations. Excali Up does not run on other websites.</li>
+        <li><strong>activeTab:</strong> used only when the user opens the extension popup to confirm the active tab is Excalidraw and exchange status and settings.</li>
+        <li><strong>Host access to excalidraw.com:</strong> required to integrate with the Excalidraw canvas and render the requested animations and local vault interface. Excali Up does not run on other websites.</li>
       </ul>
 
       <h2>Remote code</h2>
       <p>
-        Excali Up does not execute remotely hosted JavaScript or WebAssembly. All executable code is included in the extension package distributed through the Chrome Web Store.
+        Excali Up does not execute remotely hosted JavaScript or WebAssembly. All executable code and vendored libraries are included in the extension package distributed through the Chrome Web Store.
       </p>
 
       <h2>Sharing, selling, and unrelated use</h2>
@@ -127,7 +128,7 @@
 
       <h2>Chrome Web Store Limited Use</h2>
       <p>
-        Excali Up's handling of information complies with the Chrome Web Store User Data Policy, including the Limited Use requirements. Data accessed by the extension is used only to provide its user-facing GIF playback and line-animation features.
+        Excali Up's handling of information complies with the Chrome Web Store User Data Policy, including the Limited Use requirements. Data accessed by the extension is used strictly to provide its user-facing local vault auto-saving, GIF playback, and line-animation features.
       </p>
 
       <h2>Changes to this policy</h2>

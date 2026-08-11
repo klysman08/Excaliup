@@ -1583,3 +1583,217 @@ body.dark-mode .sim-iconify-panel {
 .glow-strong {
   filter: drop-shadow(0 0 10px var(--color-primary)) drop-shadow(0 0 3px var(--color-primary));
 }
+
+/* --- Version 5.0.0 Local Vault Simulation Styles --- */
+.sim-save-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background-color: var(--color-card-bg);
+  border-color: var(--color-border);
+  font-weight: bold;
+}
+
+.sim-save-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #598379;
+  border: 1px solid var(--color-border);
+  display: inline-block;
+  transition: background-color 0.2s;
+}
+
+.sim-save-dot.saving {
+  background-color: #e2b13c;
+  animation: simSavePulse 0.8s infinite alternate;
+}
+
+@keyframes simSavePulse {
+  from { opacity: 0.4; transform: scale(0.85); }
+  to { opacity: 1; transform: scale(1.15); }
+}
+
+.sim-vault-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 230px;
+  height: 100%;
+  background-color: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(8px);
+  border-left: 3px solid var(--color-border);
+  z-index: 150;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.25s cubic-bezier(0.1, 0.9, 0.2, 1);
+  user-select: none;
+}
+
+body.dark-mode .sim-vault-panel {
+  background-color: rgba(35, 34, 33, 0.95);
+  border-left-color: var(--color-border);
+}
+
+.sim-vault-panel.visible {
+  transform: translateX(0);
+}
+
+.sim-vault-header {
+  padding: 8px 10px;
+  background-color: var(--color-border);
+  color: white;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-retro);
+  font-size: 1.1rem;
+}
+
+.sim-vault-close {
+  background: none;
+  border: none;
+  color: white;
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.sim-vault-close:hover {
+  color: var(--color-secondary);
+}
+
+.sim-vault-breadcrumb {
+  padding: 6px 10px;
+  background-color: var(--color-bg);
+  border-bottom: 2px solid var(--color-border);
+  font-family: var(--font-retro);
+  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.crumb-link {
+  color: var(--color-primary);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.crumb-sep {
+  color: var(--color-text-muted);
+}
+
+.crumb-current {
+  font-weight: bold;
+  color: var(--color-text-main);
+}
+
+.sim-vault-tabs {
+  display: flex;
+  border-bottom: 2px solid var(--color-border);
+  background-color: var(--color-bg);
+}
+
+.sim-vault-tabs button {
+  flex: 1;
+  background: none;
+  border: none;
+  border-right: 1px solid var(--color-border);
+  padding: 4px 2px;
+  font-family: var(--font-retro);
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: var(--color-text-muted);
+}
+
+.sim-vault-tabs button:last-child {
+  border-right: none;
+}
+
+.sim-vault-tabs button.active {
+  background-color: var(--color-primary);
+  color: white;
+}
+
+.sim-vault-list {
+  flex-grow: 1;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.sim-vault-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 6px;
+  border: 1px solid var(--color-grid-line);
+  border-radius: 4px;
+  background-color: var(--color-card-bg);
+  cursor: pointer;
+  font-size: 0.72rem;
+  transition: transform 0.1s, border-color 0.1s;
+}
+
+.sim-vault-item:hover {
+  transform: translate(-1px, -1px);
+  border-color: var(--color-primary);
+  box-shadow: 1px 1px 0 var(--color-border);
+}
+
+.sim-vault-item.active {
+  border-color: var(--color-primary);
+  background-color: color-mix(in srgb, var(--color-primary) 15%, var(--color-card-bg));
+  font-weight: 600;
+}
+
+.sim-vault-item-left {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sim-vault-star {
+  font-size: 0.75rem;
+  color: #ccc;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.sim-vault-star.active {
+  color: #e2b13c;
+}
+
+.sim-vault-footer {
+  padding: 6px 8px;
+  border-top: 2px solid var(--color-border);
+  background-color: var(--color-bg);
+  display: flex;
+  gap: 6px;
+}
+
+.sim-vault-action-btn {
+  flex: 1;
+  padding: 4px;
+  background-color: var(--color-card-bg);
+  border: 2px solid var(--color-border);
+  font-family: var(--font-retro);
+  font-size: 0.9rem;
+  cursor: pointer;
+  text-align: center;
+  color: var(--color-text-main);
+  transition: background-color 0.1s, color 0.1s;
+}
+
+.sim-vault-action-btn:hover {
+  background-color: var(--color-primary);
+  color: white;
+}
+

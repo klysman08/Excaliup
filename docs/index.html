@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   
   <!-- SEO Tags -->
-  <title>Excali Up - Animated GIFs and Icons for Excalidraw</title>
-  <meta name="description" content="Add real-time animated GIF files and search the complete Iconify icon library from your Excalidraw whiteboard canvas.">
-  <meta name="keywords" content="Excalidraw, GIF, Icons, chrome extension, animation, canvas, whiteboard, pixel art">
+  <title>Excali Up - Local Vault Auto-Save, GIFs & Icons for Excalidraw</title>
+  <meta name="description" content="Auto-save drawings to local folder vaults, animate GIFs and SVGs, add motion effects, and browse 300,000+ Iconify icons inside Excalidraw.">
+  <meta name="keywords" content="Excalidraw, Local Vault, Auto Save, File System Access, GIF, Icons, chrome extension, animation, canvas, whiteboard, pixel art">
   
   <!-- Style Link -->
   <link rel="stylesheet" href="style.css">
@@ -46,10 +46,10 @@
   <main class="container">
     <section class="hero" aria-labelledby="hero-title">
       <div class="hero-content">
-        <span class="pixel-badge" style="margin-bottom:15px;">v4.0.0 RELEASE</span>
-        <h1 id="hero-title">Animate Your<br><span style="color:var(--color-primary)">Whiteboards</span></h1>
+        <span class="pixel-badge" style="margin-bottom:15px;">v5.0.0 RELEASE</span>
+        <h1 id="hero-title">Auto-Save & Animate<br><span style="color:var(--color-primary)">Whiteboards</span></h1>
         <p class="hero-subtitle">
-          Enables animated GIF files, customizable path motion flows, and the complete Iconify open-source icon library directly inside your Excalidraw whiteboard canvas.
+          Save drawings to local disk vaults with background auto-sync, animate GIFs and SVGs, render custom motion path flows, and browse the complete Iconify library directly inside Excalidraw.
         </p>
         <div class="hero-buttons">
           <a href="https://chromewebstore.google.com/detail/kkdemmcbedpinbabaddejkdgkmabbbbm" target="_blank" class="btn-retro primary" id="installBtn" aria-label="Install Extension Button" style="color: white; text-decoration: none;">
@@ -60,7 +60,7 @@
           </button>
         </div>
         <p style="font-size:0.85rem; color:var(--color-text-muted);">
-          * 100% Free, Secure & Open Source. Integrates directly with React imageCache.
+          * 100% Free, Secure & Open Source. Zero tracking. Local File System Access API.
         </p>
       </div>
       
@@ -97,16 +97,24 @@
     <!-- Core Features Section -->
     <section class="features-section" style="margin-bottom: 40px;">
       <h2 style="margin-bottom: 25px;">⚡ Core Features</h2>
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px;">
-        <!-- Card 1 -->
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px;">
+        <!-- Card 1: Local Vault -->
         <div class="pixel-card interactive" style="margin-bottom: 0;">
-          <span class="pixel-badge success" style="margin-bottom: 15px;">v4.0 FEATURE</span>
-          <h3 style="font-family: var(--font-retro); font-size: 1.6rem; color: var(--color-primary); margin-bottom: 10px;">🎨 Complete Iconify Library</h3>
+          <span class="pixel-badge success" style="margin-bottom: 15px;">v5.0 FEATURE</span>
+          <h3 style="font-family: var(--font-retro); font-size: 1.6rem; color: var(--color-primary); margin-bottom: 10px;">📁 Local Vault & Auto-Save</h3>
           <p style="font-size: 0.95rem; margin: 0;">
-            Browse 200+ collections (Lucide, Tabler, Material, Phosphor, Font Awesome) directly via a glassmorphic sidebar panel. Star favorite icons, filter by collections or category (including native Animated SVGs), search instantly across 300,000+ icons, and drag-and-drop or click to paste SVGs. Open/close with the <b>B</b> shortcut.
+            Connect any local folder on your computer as your drawing vault. Background debounced auto-sync (1.2s) automatically saves scene changes to standard <code>.excalidraw</code> files on disk. Features an in-canvas status pill (<code>Synced</code> / <code>Saving...</code>), slide-over file manager drawer with subfolders, breadcrumbs, favorites, search, and drag-and-drop file movement.
           </p>
         </div>
-        <!-- Card 2 -->
+        <!-- Card 2: Iconify -->
+        <div class="pixel-card interactive" style="margin-bottom: 0;">
+          <span class="pixel-badge" style="margin-bottom: 15px; background: var(--color-primary); color: white;">300K+ ICONS</span>
+          <h3 style="font-family: var(--font-retro); font-size: 1.6rem; color: var(--color-primary); margin-bottom: 10px;">🎨 Complete Iconify Library</h3>
+          <p style="font-size: 0.95rem; margin: 0;">
+            Browse 200+ icon collections (Lucide, Tabler, Material, Phosphor, Font Awesome) directly via a glassmorphic sidebar panel. Star favorite icons, filter by collections or category (including native Animated SVGs), search instantly across 300,000+ icons, and drag-and-drop or click to paste SVGs. Open/close with the <b>B</b> shortcut.
+          </p>
+        </div>
+        <!-- Card 3: Flows -->
         <div class="pixel-card interactive" style="margin-bottom: 0;">
           <span class="pixel-badge" style="margin-bottom: 15px; background: var(--color-info); color: white;">10 MOTION STYLES</span>
           <h3 style="font-family: var(--font-retro); font-size: 1.6rem; color: var(--color-primary); margin-bottom: 10px;">🌊 Line & Arrow Flows</h3>
@@ -114,7 +122,7 @@
             Animate flows along paths and arrows on-demand. Choose from 10 motion styles: Particles, Marching Ants, Gradient Pulse, Ripple Wave, Packet Train, Snake Trail, Comet, Electricity, Wave, and Dual Flow. Fine-tune speed, direction, element size (1-5), spacing (20px-120px), and glow levels (None to Strong).
           </p>
         </div>
-        <!-- Card 3 -->
+        <!-- Card 4: Media -->
         <div class="pixel-card interactive" style="margin-bottom: 0;">
           <span class="pixel-badge" style="margin-bottom: 15px;">NATIVE PLAYBACK</span>
           <h3 style="font-family: var(--font-retro); font-size: 1.6rem; color: var(--color-primary); margin-bottom: 10px;">👾 Real-time Playback</h3>
@@ -137,8 +145,9 @@
         <div class="playground-canvas-area">
           <div class="canvas-toolbar">
             <span class="toolbar-title">🎨 Excalidraw Simulated Canvas</span>
+            <button class="toolbar-btn sim-save-btn" id="btnToggleVault" style="margin-right: 5px;" title="Excali Up Local Vault Status (click to open drawer)"><span class="sim-save-dot" id="simSaveDot"></span> <span id="simSaveStatusText">Synced</span></button>
             <button class="toolbar-btn" id="btnToggleIconify" style="margin-right: 5px;" title="Toggle Iconify Library (shortcut: B)">🔍 ICONIFY (B)</button>
-            <button class="toolbar-btn" id="btnClearCanvas" title="Clear whiteboard elements">🧹 CLEAR BOARD</button>
+            <button class="toolbar-btn" id="btnClearCanvas" title="Clear whiteboard elements">🧹 CLEAR</button>
           </div>
           
           <div class="canvas-board" id="canvasBoard">
@@ -162,12 +171,34 @@
                 <!-- Dynamically populated icons in app.js -->
               </div>
             </div>
+
+            <!-- Simulated Local Vault Drawer -->
+            <div class="sim-vault-panel" id="simVaultPanel">
+              <div class="sim-vault-header">
+                <span>📁 Local Vault</span>
+                <button class="sim-vault-close" id="simVaultClose" title="Close Vault Drawer">✕</button>
+              </div>
+              <div class="sim-vault-breadcrumb" id="simVaultBreadcrumb">
+                <span class="crumb-link" id="crumbRoot">📁 Vault</span> <span class="crumb-sep">/</span> <span class="crumb-current" id="crumbCurrent">Diagrams</span>
+              </div>
+              <div class="sim-vault-tabs">
+                <button class="active" data-vtab="files" id="tabVaultFiles">Files (4)</button>
+                <button data-vtab="starred" id="tabVaultStarred">⭐ Starred (2)</button>
+              </div>
+              <div class="sim-vault-list" id="simVaultList">
+                <!-- Dynamically populated in app.js -->
+              </div>
+              <div class="sim-vault-footer">
+                <button class="sim-vault-action-btn" id="simNewDrawingBtn">+ New Drawing</button>
+                <button class="sim-vault-action-btn" id="simNewFolderBtn">+ Folder</button>
+              </div>
+            </div>
             
             <!-- Empty Canvas State -->
             <div class="canvas-empty-state" id="canvasEmptyState">
               <div class="empty-icon">📂</div>
               <h3 class="empty-title">Whiteboard is Empty</h3>
-              <p class="empty-desc">Spawn vector elements, drag and drop a GIF onto the board, or click preset stickers below!</p>
+              <p class="empty-desc">Spawn vector elements, drop stickers onto the board, or click the Synced vault button to open drawings!</p>
             </div>
             
             <!-- Simulated Canvas Floating Toolbar -->
@@ -246,7 +277,7 @@
                 <div class="sim-logo">
                   <span class="sim-logo-bold">Excali</span><span class="sim-logo-light">Up</span>
                 </div>
-                <div class="sim-version">v4.0.0</div>
+                <div class="sim-version">v5.0.0</div>
               </header>
 
               <!-- Connection Status Banner -->
@@ -334,11 +365,9 @@
                 <div class="sim-tips">
                   <span style="font-size:1.1rem;">💡</span>
                   <div style="font-size:0.7rem; line-height:1.3;">
-                    <b>How to use:</b> Drag and drop any <b>.gif</b> sticker directly onto Excalidraw. The extension decodes and injects loops automatically.
+                    <b>v5.0 Local Vault:</b> Click the <b>Synced</b> button on the canvas to open your local folder drawer and manage drawings!
                   </div>
                 </div>
-
-                
               </div>
             </div>
           </div>
@@ -401,36 +430,36 @@
 
     <!-- Installation Steps Section -->
     <section id="how-it-works" class="pixel-card" aria-labelledby="steps-title">
-      <h2 id="steps-title">🔧 Loading Extension Unpacked</h2>
+      <h2 id="steps-title">🔧 Quick Installation Guide</h2>
       <p style="margin-bottom: 40px;">
-        Since the project is hosted publicly on GitHub, follow these quick retro steps to run it locally in Chrome:
+        Choose whether to install directly from the Chrome Web Store or run unpacked for local development:
       </p>
 
       <div class="steps-container">
         <!-- Step 1 -->
         <div class="step-card">
           <div class="step-number">01</div>
-          <h3 class="step-title">Get Files</h3>
+          <h3 class="step-title">Chrome Web Store</h3>
           <p class="step-desc">
-            Download the source code archive from the GitHub repository and extract the files to a folder on your computer.
+            Visit the official <a href="https://chromewebstore.google.com/detail/kkdemmcbedpinbabaddejkdgkmabbbbm" target="_blank" style="color:var(--color-primary); text-decoration:underline;">Chrome Web Store listing</a> and click <b>Add to Chrome</b> for one-click setup.
           </p>
         </div>
 
         <!-- Step 2 -->
         <div class="step-card">
           <div class="step-number">02</div>
-          <h3 class="step-title">Developer Mode</h3>
+          <h3 class="step-title">Or Load Unpacked</h3>
           <p class="step-desc">
-            Open Chrome, navigate to <code style="background-color:var(--color-bg); padding:2px 4px;">chrome://extensions</code>, and toggle <b>Developer Mode</b> ON in the top-right.
+            Clone the GitHub repo, open <code style="background-color:var(--color-bg); padding:2px 4px;">chrome://extensions</code>, enable <b>Developer Mode</b>, and select the project root folder.
           </p>
         </div>
 
         <!-- Step 3 -->
         <div class="step-card">
           <div class="step-number">03</div>
-          <h3 class="step-title">Load Folder</h3>
+          <h3 class="step-title">Connect & Sketch</h3>
           <p class="step-desc">
-            Click <b>Load Unpacked</b> and choose the extracted root folder. Open Excalidraw and start adding animated GIFs!
+            Open <a href="https://excalidraw.com" target="_blank" style="color:var(--color-primary); text-decoration:underline;">excalidraw.com</a>, click <b>Excaliup-save</b> to connect a local folder vault, and start drawing with flows & GIFs!
           </p>
         </div>
       </div>
@@ -440,18 +469,18 @@
     <section id="technical" class="tech-section" aria-labelledby="tech-title">
       <!-- Info Card -->
       <div class="pixel-card" style="margin-bottom: 0;">
-        <h2 id="tech-title">🧬 Hooking React Fiber</h2>
+        <h2 id="tech-title">🧬 Native React & File System Hooks</h2>
         <p>
-          Unlike standard canvas extensions that paste overlays, Excali Up works natively with **Excalidraw's core rendering pipeline**:
+          Unlike standard canvas extensions that merely paste overlay widgets, Excali Up works natively with **Excalidraw's core engine and local disk APIs**:
         </p>
         <ul style="margin-left: 20px; margin-bottom: 15px; display:flex; flex-direction:column; gap:10px;">
-          <li><b>DOM Traversal:</b> Resolves react nodes by searching `.excalidraw__canvas.interactive` for key attributes.</li>
-          <li><b>Image Cache Overriding:</b> Hijacks `app.imageCache.set` so that incoming GIF assets swap static image references.</li>
-          <li><b>Omggif Decoder:</b> Computes disposal formats (e.g., restore to background or previous frames) to draw precise frame frames.</li>
-          <li><b>Immutable Versioning:</b> Forces canvas redraws by incrementing version hashes directly in Excalidraw scene arrays.</li>
+          <li><b>Local File System Access:</b> Uses the native File System Access API with IndexedDB handle caching to write standard <code>.excalidraw</code> JSON files directly to disk.</li>
+          <li><b>Debounced Auto-Sync:</b> Watches canvas state mutations and serializes full scenes with a 1.2s inactivity debounce window.</li>
+          <li><b>Image Cache Interception:</b> Hooks <code>app.imageCache.set</code> to swap static GIF/SVG assets with dynamic animated render loops.</li>
+          <li><b>React Fiber Traversal:</b> Resolves component handles from <code>.excalidraw__canvas.interactive</code> to control scenes without full page refreshes.</li>
         </ul>
         <span class="pixel-badge success">Zero Dependencies</span>
-        <span class="pixel-badge" style="background:#5B88A5; color:white;">React Native Pipeline</span>
+        <span class="pixel-badge" style="background:#5B88A5; color:white;">Local-First Architecture</span>
       </div>
 
       <!-- Code Snippet Mockup -->
@@ -460,23 +489,22 @@
           <div class="code-dot"></div>
           <div class="code-dot"></div>
           <div class="code-dot"></div>
-          <span class="code-title">inject.js</span>
+          <span class="code-title">excaliup-core.js & inject.js</span>
         </div>
         <div class="code-content">
-          <pre><code><span class="code-comment">// Intercept Excalidraw cache</span>
-<span class="code-keyword">const</span> originalSet = imageCache.set;
-imageCache.set = <span class="code-keyword">function</span>(fileId, cacheEntry) {
-  <span class="code-keyword">const</span> res = originalSet.apply(<span class="code-keyword">this</span>, arguments);
-  <span class="code-keyword">if</span> (cacheEntry.mimeType === <span class="code-string">'image/gif'</span>) {
-    <span class="code-keyword">if</span> (!activeGifs.has(fileId)) {
-      <span class="code-comment">// Decode & animate via canvas</span>
-      activeGifs.set(fileId, <span class="code-keyword">new</span> <span class="code-function">GifPlayer</span>(
-        fileId, cacheEntry, app
-      ));
-    }
-  }
-  <span class="code-keyword">return</span> res;
-};</code></pre>
+          <pre><code><span class="code-comment">// Local Vault Debounced Auto-Save</span>
+<span class="code-keyword">function</span> triggerAutoSave() {
+  clearTimeout(autoSaveTimer);
+  updateStatusButton(<span class="code-string">'saving'</span>);
+  autoSaveTimer = setTimeout(<span class="code-keyword">async</span> () => {
+    <span class="code-keyword">const</span> scene = serializeScene(app.getSceneElements());
+    <span class="code-keyword">await</span> activeFileHandle.createWritable().then(w => {
+      w.write(JSON.stringify(scene, null, 2));
+      w.close();
+    });
+    updateStatusButton(<span class="code-string">'synced'</span>);
+  }, 1200);
+}</code></pre>
         </div>
       </div>
     </section>
@@ -487,23 +515,30 @@ imageCache.set = <span class="code-keyword">function</span>(fileId, cacheEntry) 
       
       <div class="faq-list">
         <div class="faq-item" tabindex="0">
-          <h3 class="faq-question">Does this work on custom Excalidraw instances?</h3>
+          <h3 class="faq-question">How does the Local Vault & Auto-Save feature work?</h3>
           <div class="faq-answer">
-            Currently, the content script matches `https://excalidraw.com/*`. To run on self-hosted instances of Excalidraw, you can easily modify the matches array in the `manifest.json` file to include your custom domain name.
+            Excali Up uses the browser's native File System Access API to connect directly to any local folder on your computer. When you draw or edit, your canvas is automatically debounced and saved into standard <code>.excalidraw</code> JSON files on your disk. You can organize folders, star favorite drawings, and switch between drawings instantly.
           </div>
         </div>
 
         <div class="faq-item" tabindex="0">
-          <h3 class="faq-question">Will the exported SVG/PNG contain animations?</h3>
+          <h3 class="faq-question">Are my drawings and files private?</h3>
           <div class="faq-answer">
-            No, the standard Excalidraw exporter saves drawings as standard SVG code or static PNG images. The GIFs will play dynamically on your active blackboard canvas, but exports will capture the static frame.
+            Yes, 100%. Excali Up has no backend servers, telemetry, or third-party analytics. Directory handles are stored locally in your browser's IndexedDB, and drawing files are read and written strictly on your local disk.
           </div>
         </div>
 
         <div class="faq-item" tabindex="0">
-          <h3 class="faq-question">How does performance hold up with multiple GIFs?</h3>
+          <h3 class="faq-question">Does this work on custom or self-hosted Excalidraw instances?</h3>
           <div class="faq-answer">
-            Excali Up optimizes memory by managing a single rendering tick per GIF element and running decoding once. If you load dozens of highly detailed GIFs, you can use the Extension Toggle Switch to pause the rendering loop and save CPU power instantly.
+            By default, the manifest matches <code>https://excalidraw.com/*</code>. To run on self-hosted instances of Excalidraw, you can edit the <code>matches</code> array in <code>manifest.json</code> to include your internal domain.
+          </div>
+        </div>
+
+        <div class="faq-item" tabindex="0">
+          <h3 class="faq-question">Will exported SVG/PNG files contain animations?</h3>
+          <div class="faq-answer">
+            Standard Excalidraw exports generate static SVG and PNG files representing the current canvas frame. The animations loop dynamically inside your live Excalidraw canvas session.
           </div>
         </div>
       </div>
