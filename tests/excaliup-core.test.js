@@ -209,7 +209,26 @@ test('normalizes vault metadata and deduplicates favorites', () => {
 });
 
 test('scans mock directory structure and resolves drawing files', async () => {
+  function createMockFile(fileName, content = '') {
+    const fileObj = {
+      kind: 'file',
+      name: fileName,
+      content: content,
+      getFile: async () => ({
+        size: fileObj.content.length || 50,
+        lastModified: 1000,
+        text: async () => fileObj.content
+      }),
+      createWritable: async () => ({
+        write: async (data) => { fileObj.content = data; },
+        close: async () => {}
+      })
+    };
+    return fileObj;
+  }
+
   function createMockDir(name, entries = {}) {
+
     return {
       kind: 'directory',
       name,
@@ -231,20 +250,7 @@ test('scans mock directory structure and resolves drawing files', async () => {
       getFileHandle: async (fileName, { create } = {}) => {
         if (!entries[fileName]) {
           if (create) {
-            entries[fileName] = {
-              kind: 'file',
-              name: fileName,
-              content: '',
-              getFile: async () => ({
-                size: 100,
-                lastModified: 1000,
-                text: async () => entries[fileName].content
-              }),
-              createWritable: async () => ({
-                write: async (data) => { entries[fileName].content = data; },
-                close: async () => {}
-              })
-            };
+            entries[fileName] = createMockFile(fileName, '');
           } else {
             throw new Error(`File ${fileName} not found`);
           }
@@ -259,19 +265,9 @@ test('scans mock directory structure and resolves drawing files', async () => {
 
   const mockRoot = createMockDir('root', {
     'subfolder': createMockDir('subfolder', {
-      'nested.excalidraw': {
-        kind: 'file',
-        name: 'nested.excalidraw',
-        content: '{"type":"excalidraw","elements":[]}',
-        getFile: async () => ({ size: 50, lastModified: 2000, text: async () => '{"type":"excalidraw","elements":[]}' })
-      }
+      'nested.excalidraw': createMockFile('nested.excalidraw', '{"type":"excalidraw","elements":[]}')
     }),
-    'root-draw.excalidraw': {
-      kind: 'file',
-      name: 'root-draw.excalidraw',
-      content: '{"type":"excalidraw","elements":[]}',
-      getFile: async () => ({ size: 80, lastModified: 3000, text: async () => '{"type":"excalidraw","elements":[]}' })
-    },
+    'root-draw.excalidraw': createMockFile('root-draw.excalidraw', '{"type":"excalidraw","elements":[]}'),
     'ignored.txt': {
       kind: 'file',
       name: 'ignored.txt',
@@ -288,13 +284,49 @@ test('scans mock directory structure and resolves drawing files', async () => {
   const allDrawings = await core.scanAllVaultDrawings(mockRoot, '');
   assert.equal(allDrawings.length, 2);
 
-  await core.writeDrawingFile(mockRoot, 'subfolder/new.excalidraw', 'test-content');
-  const readContent = await core.readDrawingFile(mockRoot, 'subfolder/new.excalidraw');
-  assert.equal(readContent, 'test-content');
+  const allFolders = await core.scanAllVaultFolders(mockRoot, '');
+  assert.equal(allFolders.length, 1);
+  assert.equal(allFolders[0].path, 'subfolder');
 
-  await core.deleteDrawingFile(mockRoot, 'subfolder/new.excalidraw');
+  // Test moving drawing file
+  await core.writeDrawingFile(mockRoot, 'root-draw.excalidraw', 'root-content');
+  const moveRes = await core.moveDrawingFile(mockRoot, 'root-draw.excalidraw', 'subfolder');
+  assert.equal(moveRes.success, true);
+  assert.equal(moveRes.moved, true);
+  assert.equal(moveRes.newRelativePath, 'subfolder/root-draw.excalidraw');
+
+  const movedContent = await core.readDrawingFile(mockRoot, 'subfolder/root-draw.excalidraw');
+  assert.equal(movedContent, 'root-content');
   await assert.rejects(async () => {
-    await core.readDrawingFile(mockRoot, 'subfolder/new.excalidraw');
+    await core.readDrawingFile(mockRoot, 'root-draw.excalidraw');
+  });
+
+  // Test moving drawing file back to root
+  const moveBackRes = await core.moveDrawingFile(mockRoot, 'subfolder/root-draw.excalidraw', '');
+  assert.equal(moveBackRes.success, true);
+  assert.equal(moveBackRes.moved, true);
+  assert.equal(moveBackRes.newRelativePath, 'root-draw.excalidraw');
+  const rootContentAfterMoveBack = await core.readDrawingFile(mockRoot, 'root-draw.excalidraw');
+  assert.equal(rootContentAfterMoveBack, 'root-content');
+
+  // Test moving to same location
+  const noopMove = await core.moveDrawingFile(mockRoot, 'root-draw.excalidraw', '');
+  assert.equal(noopMove.moved, false);
+
+  // Test folder deletion
+  await core.createVaultSubfolder(mockRoot, 'temp-folder');
+  const foldersAfterCreate = await core.scanAllVaultFolders(mockRoot, '');
+  assert.equal(foldersAfterCreate.length, 2);
+
+  await core.deleteVaultFolder(mockRoot, 'temp-folder');
+  const foldersAfterDelete = await core.scanAllVaultFolders(mockRoot, '');
+  assert.equal(foldersAfterDelete.length, 1);
+
+  // Test cannot delete root folder
+  await assert.rejects(async () => {
+    await core.deleteVaultFolder(mockRoot, '');
   });
 });
+
+
 

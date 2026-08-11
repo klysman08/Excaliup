@@ -696,6 +696,59 @@
     await dirHandle.removeEntry(fileName);
   }
 
+  async function scanAllVaultFolders(rootHandle, currentPath = '', depth = 0) {
+    if (!rootHandle) return [];
+    const cleanCurrent = normalizeVaultPath(currentPath);
+    const targetDir = await resolveDirectoryHandle(rootHandle, cleanCurrent, false);
+    const results = [];
+
+    for await (const [name, handle] of targetDir.entries()) {
+      if (name.startsWith('.')) continue;
+      if (handle.kind === 'directory') {
+        const itemPath = cleanCurrent ? `${cleanCurrent}/${name}` : name;
+        results.push({
+          name,
+          path: itemPath,
+          depth
+        });
+        const subResults = await scanAllVaultFolders(rootHandle, itemPath, depth + 1);
+        results.push(...subResults);
+      }
+    }
+    return results;
+  }
+
+  async function moveDrawingFile(rootHandle, sourceRelativePath, targetRelativeFolderPath) {
+    const cleanSource = normalizeVaultPath(sourceRelativePath);
+    const cleanTargetFolder = normalizeVaultPath(targetRelativeFolderPath);
+    if (!cleanSource) throw new Error('Source path is required');
+
+    const fileName = cleanSource.split('/').pop();
+    const sourceDir = cleanSource.split('/').slice(0, -1).join('/');
+
+    if (sourceDir === cleanTargetFolder) {
+      return { success: true, newRelativePath: cleanSource, moved: false };
+    }
+
+    const targetRelativePath = cleanTargetFolder ? `${cleanTargetFolder}/${fileName}` : fileName;
+    const content = await readDrawingFile(rootHandle, cleanSource);
+    await writeDrawingFile(rootHandle, targetRelativePath, content);
+    await deleteDrawingFile(rootHandle, cleanSource);
+
+    return { success: true, newRelativePath: targetRelativePath, moved: true };
+  }
+
+  async function deleteVaultFolder(rootHandle, relativeFolderPath, recursive = true) {
+    const cleanPath = normalizeVaultPath(relativeFolderPath);
+    if (!cleanPath) throw new Error('Cannot delete vault root directory');
+
+    const segments = cleanPath.split('/');
+    const folderName = segments.pop();
+    const parentPath = segments.join('/');
+    const parentDirHandle = await resolveDirectoryHandle(rootHandle, parentPath, false);
+    await parentDirHandle.removeEntry(folderName, { recursive: !!recursive });
+  }
+
   async function createVaultSubfolder(rootHandle, relativePath) {
     const cleanPath = normalizeVaultPath(relativePath);
     if (!cleanPath) return null;
@@ -780,13 +833,16 @@
     resolveDirectoryHandle,
     scanVaultDirectory,
     scanAllVaultDrawings,
+    scanAllVaultFolders,
     normalizeVaultMetadata,
     readVaultMetadata,
     writeVaultMetadata,
     readDrawingFile,
     writeDrawingFile,
     deleteDrawingFile,
+    moveDrawingFile,
     createVaultSubfolder,
+    deleteVaultFolder,
     serializeExcalidrawScene,
     parseExcalidrawScene
   });

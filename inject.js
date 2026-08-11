@@ -3870,6 +3870,89 @@
       .excaliup-vault-modal-btn.danger:hover {
         background: #dc2626;
       }
+      .excaliup-vault-item[draggable="true"] {
+        cursor: grab;
+      }
+      .excaliup-vault-item[draggable="true"]:active {
+        cursor: grabbing;
+      }
+      .excaliup-vault-item.dragging {
+        opacity: 0.45;
+        transform: scale(0.98);
+      }
+      .excaliup-vault-item.drag-target {
+        background: hsla(270, 75%, 64%, 0.25) !important;
+        outline: 2px dashed hsl(270, 75%, 64%);
+        outline-offset: -2px;
+      }
+      .excaliup-vault-crumb.drag-target {
+        background: hsla(270, 75%, 64%, 0.3) !important;
+        color: hsl(270, 75%, 70%) !important;
+        outline: 2px dashed hsl(270, 75%, 64%);
+      }
+      .excaliup-vault-folder-actions {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        opacity: 0;
+        transition: opacity 0.15s ease;
+      }
+      .excaliup-vault-item:hover .excaliup-vault-folder-actions {
+        opacity: 1;
+      }
+      .excaliup-vault-folder-del-btn {
+        background: transparent;
+        border: none;
+        color: inherit;
+        opacity: 0.6;
+        padding: 4px;
+        border-radius: 4px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        transition: all 0.12s ease;
+      }
+      .excaliup-vault-folder-del-btn:hover {
+        opacity: 1;
+        color: #ef4444;
+        background: rgba(239, 68, 68, 0.15);
+      }
+      .excaliup-vault-modal-label {
+        font-size: 12px;
+        font-weight: 500;
+        opacity: 0.8;
+        margin-bottom: -10px;
+      }
+      .excaliup-vault-modal-select {
+        width: 100%;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 8px;
+        padding: 10px 12px;
+        color: inherit;
+        font-size: 14px;
+        outline: none;
+        box-sizing: border-box;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+        cursor: pointer;
+      }
+      .excaliup-vault-modal-select option {
+        background: #181820;
+        color: #ffffff;
+      }
+      .excaliup-vault-modal.theme--light .excaliup-vault-modal-select {
+        background: #f9fafb;
+        border-color: rgba(0, 0, 0, 0.15);
+        color: #111827;
+      }
+      .excaliup-vault-modal.theme--light .excaliup-vault-modal-select option {
+        background: #ffffff;
+        color: #111827;
+      }
+      .excaliup-vault-modal-select:focus {
+        border-color: hsl(270, 75%, 64%);
+        box-shadow: 0 0 0 3px rgba(140, 90, 220, 0.25);
+      }
       @keyframes excaliup-fade-in {
         from { opacity: 0; }
         to { opacity: 1; }
@@ -4918,6 +5001,9 @@
       <button class="excaliup-vault-popover-item" id="popover-rename">
         <iconify-icon icon="lucide:pencil"></iconify-icon> <span>Rename</span>
       </button>
+      <button class="excaliup-vault-popover-item" id="popover-move">
+        <iconify-icon icon="lucide:folder-input"></iconify-icon> <span>Move to...</span>
+      </button>
       <button class="excaliup-vault-popover-item" id="popover-duplicate">
         <iconify-icon icon="lucide:copy"></iconify-icon> <span>Duplicate</span>
       </button>
@@ -4933,6 +5019,12 @@
       e.stopPropagation();
       closeActiveVaultPopover();
       renameVaultDrawing(file.path);
+    });
+
+    popover.querySelector('#popover-move').addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeActiveVaultPopover();
+      showVaultMoveModal(file.path);
     });
 
     popover.querySelector('#popover-duplicate').addEventListener('click', (e) => {
@@ -5025,6 +5117,169 @@
     }, 50);
   }
 
+  function showVaultNewDrawingModal({ defaultName, folders = [], initialFolder = '', onConfirm }) {
+    if (activeVaultModal) {
+      activeVaultModal.remove();
+      activeVaultModal = null;
+    }
+
+    const excalidraw = document.querySelector('.excalidraw') || document.body;
+    const overlay = document.createElement('div');
+    overlay.className = 'excaliup-vault-modal-overlay';
+
+    const isLight = currentApp && currentApp.state && currentApp.state.theme === 'light';
+
+    let folderOptionsHtml = `<option value="">📁 / (Vault Root)</option>`;
+    for (const f of folders) {
+      const indent = '&nbsp;&nbsp;'.repeat(f.depth + 1);
+      const isSelected = f.path === initialFolder ? 'selected' : '';
+      folderOptionsHtml += `<option value="${f.path}" ${isSelected}>${indent}📁 /${f.path}</option>`;
+    }
+
+    overlay.innerHTML = `
+      <div class="excaliup-vault-modal ${isLight ? 'theme--light' : ''}">
+        <div class="excaliup-vault-modal-header">
+          <div class="excaliup-vault-modal-icon">
+            <iconify-icon icon="lucide:file-plus-2"></iconify-icon>
+          </div>
+          <div>
+            <div class="excaliup-vault-modal-title">New Drawing</div>
+            <div class="excaliup-vault-modal-desc">Enter drawing name and choose folder:</div>
+          </div>
+        </div>
+
+        <div class="excaliup-vault-modal-label">Drawing Name</div>
+        <input type="text" class="excaliup-vault-modal-input" id="new-drawing-name" placeholder="Drawing name..." value="${defaultName.replace(/"/g, '&quot;')}" />
+
+        <div class="excaliup-vault-modal-label">Save In Folder</div>
+        <select class="excaliup-vault-modal-select" id="new-drawing-folder">
+          ${folderOptionsHtml}
+        </select>
+
+        <div class="excaliup-vault-modal-actions">
+          <button class="excaliup-vault-modal-btn secondary" id="modal-cancel">Cancel</button>
+          <button class="excaliup-vault-modal-btn primary" id="modal-confirm">Create Drawing</button>
+        </div>
+      </div>
+    `;
+
+    const nameInput = overlay.querySelector('#new-drawing-name');
+    const folderSelect = overlay.querySelector('#new-drawing-folder');
+    const cancelBtn = overlay.querySelector('#modal-cancel');
+    const confirmBtn = overlay.querySelector('#modal-confirm');
+
+    const closeModal = () => {
+      overlay.remove();
+      if (activeVaultModal === overlay) activeVaultModal = null;
+    };
+
+    const handleConfirm = () => {
+      const val = nameInput.value.trim();
+      if (val) {
+        const selFolder = folderSelect.value || '';
+        closeModal();
+        onConfirm(val, selFolder);
+      } else {
+        nameInput.focus();
+      }
+    };
+
+    cancelBtn.addEventListener('click', closeModal);
+    confirmBtn.addEventListener('click', handleConfirm);
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) closeModal();
+    });
+
+    nameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        handleConfirm();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeModal();
+      }
+    });
+
+    excalidraw.appendChild(overlay);
+    activeVaultModal = overlay;
+    setTimeout(() => {
+      nameInput.focus();
+      nameInput.select();
+    }, 50);
+  }
+
+  async function showVaultMoveModal(drawingPath) {
+    if (!rootVaultHandle || !drawingPath) return;
+    if (activeVaultModal) {
+      activeVaultModal.remove();
+      activeVaultModal = null;
+    }
+
+    const folders = await Core.scanAllVaultFolders(rootVaultHandle, '');
+    const currentFolder = drawingPath.split('/').slice(0, -1).join('/');
+    const fileName = drawingPath.split('/').pop().replace(/\.excalidraw$/, '');
+
+    const excalidraw = document.querySelector('.excalidraw') || document.body;
+    const overlay = document.createElement('div');
+    overlay.className = 'excaliup-vault-modal-overlay';
+    const isLight = currentApp && currentApp.state && currentApp.state.theme === 'light';
+
+    let folderOptionsHtml = `<option value="" ${currentFolder === '' ? 'selected' : ''}>📁 / (Vault Root)</option>`;
+    for (const f of folders) {
+      const indent = '&nbsp;&nbsp;'.repeat(f.depth + 1);
+      const isSelected = f.path === currentFolder ? 'selected' : '';
+      folderOptionsHtml += `<option value="${f.path}" ${isSelected}>${indent}📁 /${f.path}</option>`;
+    }
+
+    overlay.innerHTML = `
+      <div class="excaliup-vault-modal ${isLight ? 'theme--light' : ''}">
+        <div class="excaliup-vault-modal-header">
+          <div class="excaliup-vault-modal-icon">
+            <iconify-icon icon="lucide:folder-input"></iconify-icon>
+          </div>
+          <div>
+            <div class="excaliup-vault-modal-title">Move Drawing</div>
+            <div class="excaliup-vault-modal-desc">Select destination folder for "${fileName}":</div>
+          </div>
+        </div>
+
+        <div class="excaliup-vault-modal-label">Destination Folder</div>
+        <select class="excaliup-vault-modal-select" id="move-drawing-folder">
+          ${folderOptionsHtml}
+        </select>
+
+        <div class="excaliup-vault-modal-actions">
+          <button class="excaliup-vault-modal-btn secondary" id="modal-cancel">Cancel</button>
+          <button class="excaliup-vault-modal-btn primary" id="modal-confirm">Move Drawing</button>
+        </div>
+      </div>
+    `;
+
+    const folderSelect = overlay.querySelector('#move-drawing-folder');
+    const cancelBtn = overlay.querySelector('#modal-cancel');
+    const confirmBtn = overlay.querySelector('#modal-confirm');
+
+    const closeModal = () => {
+      overlay.remove();
+      if (activeVaultModal === overlay) activeVaultModal = null;
+    };
+
+    const handleConfirm = () => {
+      const targetFolder = folderSelect.value || '';
+      closeModal();
+      moveVaultDrawing(drawingPath, targetFolder);
+    };
+
+    cancelBtn.addEventListener('click', closeModal);
+    confirmBtn.addEventListener('click', handleConfirm);
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) closeModal();
+    });
+
+    excalidraw.appendChild(overlay);
+    activeVaultModal = overlay;
+  }
+
   function showVaultConfirmModal({ title, message, confirmText = 'Delete', isDanger = true, onConfirm }) {
     if (activeVaultModal) {
       activeVaultModal.remove();
@@ -5104,6 +5359,74 @@
     }
   }
 
+  async function moveVaultDrawing(sourceRelativePath, targetRelativeFolderPath) {
+    if (!rootVaultHandle || !sourceRelativePath) return;
+
+    try {
+      const result = await Core.moveDrawingFile(rootVaultHandle, sourceRelativePath, targetRelativeFolderPath);
+      if (!result) return;
+
+      if (result.moved) {
+        if (vaultMetadata.favorites && vaultMetadata.favorites.includes(sourceRelativePath)) {
+          vaultMetadata.favorites = vaultMetadata.favorites.map(f => f === sourceRelativePath ? result.newRelativePath : f);
+        }
+        if (activeDrawingRelativePath === sourceRelativePath) {
+          activeDrawingRelativePath = result.newRelativePath;
+        }
+        if (vaultMetadata.lastOpenedFile === sourceRelativePath) {
+          vaultMetadata.lastOpenedFile = result.newRelativePath;
+        }
+        await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
+        await refreshVaultListing(true);
+
+        const destName = targetRelativeFolderPath ? targetRelativeFolderPath : 'Vault Root';
+        showToast(`Moved to ${destName}`);
+      } else {
+        showToast('Drawing is already in this folder');
+      }
+    } catch (err) {
+      console.error('[Excali Up] Failed to move drawing:', err);
+      showToast('Failed to move drawing');
+    }
+  }
+
+  async function deleteVaultFolderWithConfirm(folderPath, folderName) {
+    if (!rootVaultHandle || !folderPath) return;
+
+    showVaultConfirmModal({
+      title: 'Delete Folder',
+      message: `Are you sure you want to delete "${folderName}" and all drawings inside it? This will permanently delete the folder and its contents from your disk.`,
+      confirmText: 'Delete Folder',
+      isDanger: true,
+      onConfirm: async () => {
+        try {
+          await Core.deleteVaultFolder(rootVaultHandle, folderPath, true);
+
+          // Clean up favorites that were inside deleted folder
+          vaultMetadata.favorites = (vaultMetadata.favorites || []).filter(
+            f => f !== folderPath && !f.startsWith(`${folderPath}/`)
+          );
+
+          if (activeDrawingRelativePath && (activeDrawingRelativePath === folderPath || activeDrawingRelativePath.startsWith(`${folderPath}/`))) {
+            activeDrawingRelativePath = null;
+          }
+
+          if (currentVaultRelativePath === folderPath || currentVaultRelativePath.startsWith(`${folderPath}/`)) {
+            const parentSegments = folderPath.split('/').slice(0, -1);
+            currentVaultRelativePath = parentSegments.join('/');
+          }
+
+          await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
+          await refreshVaultListing(true);
+          showToast(`Deleted folder ${folderName}`);
+        } catch (err) {
+          console.error('[Excali Up] Delete folder failed:', err);
+          showToast('Failed to delete folder');
+        }
+      }
+    });
+  }
+
   async function createNewVaultDrawing() {
     if (!rootVaultHandle) {
       await connectLocalVaultFolder();
@@ -5111,16 +5434,16 @@
     }
 
     const defaultName = `Drawing-${new Date().toISOString().slice(0, 10)}-${Date.now().toString().slice(-4)}`;
-    showVaultPromptModal({
-      title: 'New Drawing',
-      description: 'Enter a name for your new Excalidraw drawing:',
-      placeholder: 'Drawing name...',
-      initialValue: defaultName,
-      confirmText: 'Create Drawing',
-      onConfirm: async (inputName) => {
+    const allFolders = await Core.scanAllVaultFolders(rootVaultHandle, '');
+
+    showVaultNewDrawingModal({
+      defaultName,
+      folders: allFolders,
+      initialFolder: currentVaultRelativePath,
+      onConfirm: async (inputName, targetFolder) => {
         const cleanName = Core.sanitizeFileName(inputName, defaultName);
         const fileName = cleanName.endsWith('.excalidraw') ? cleanName : `${cleanName}.excalidraw`;
-        const targetPath = currentVaultRelativePath ? `${currentVaultRelativePath}/${fileName}` : fileName;
+        const targetPath = targetFolder ? `${targetFolder}/${fileName}` : fileName;
 
         try {
           if (activeDrawingRelativePath && autoSaveTimer) {
@@ -5151,6 +5474,9 @@
           await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
 
           setVaultSyncState('synced');
+          if (currentVaultRelativePath !== targetFolder) {
+            currentVaultRelativePath = targetFolder;
+          }
           refreshVaultListing(true);
           showToast(`Created ${fileName}`);
         } catch (err) {
@@ -5302,6 +5628,30 @@
     }
   }
 
+  function attachDropTarget(element, targetFolderPath) {
+    element.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+    });
+    element.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      element.classList.add('drag-target');
+    });
+    element.addEventListener('dragleave', (e) => {
+      if (!element.contains(e.relatedTarget)) {
+        element.classList.remove('drag-target');
+      }
+    });
+    element.addEventListener('drop', (e) => {
+      e.preventDefault();
+      element.classList.remove('drag-target');
+      const sourcePath = e.dataTransfer.getData('text/plain');
+      if (sourcePath) {
+        moveVaultDrawing(sourcePath, targetFolderPath);
+      }
+    });
+  }
+
   function renderVaultBreadcrumbs() {
     const container = document.getElementById('excaliup-vault-breadcrumbs');
     if (!container) return;
@@ -5314,6 +5664,7 @@
       currentVaultRelativePath = '';
       refreshVaultListing(true);
     });
+    attachDropTarget(rootCrumb, '');
     container.appendChild(rootCrumb);
 
     if (currentVaultRelativePath) {
@@ -5336,6 +5687,7 @@
           currentVaultRelativePath = targetPath;
           refreshVaultListing(true);
         });
+        attachDropTarget(crumb, targetPath);
         container.appendChild(crumb);
       }
     }
@@ -5433,12 +5785,29 @@
         <div class="excaliup-vault-item-info">
           <div class="excaliup-vault-item-name">${folder.name}</div>
         </div>
+        <div class="excaliup-vault-folder-actions">
+          <button class="excaliup-vault-folder-del-btn" title="Delete folder">
+            <iconify-icon icon="lucide:trash-2"></iconify-icon>
+          </button>
+        </div>
         <iconify-icon icon="lucide:chevron-right" style="opacity: 0.4; font-size: 14px;"></iconify-icon>
       `;
-      row.addEventListener('click', () => {
+
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('.excaliup-vault-folder-del-btn')) return;
         currentVaultRelativePath = folder.path;
         refreshVaultListing(true);
       });
+
+      const delBtn = row.querySelector('.excaliup-vault-folder-del-btn');
+      if (delBtn) {
+        delBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          deleteVaultFolderWithConfirm(folder.path, folder.name);
+        });
+      }
+
+      attachDropTarget(row, folder.path);
       list.appendChild(row);
     }
 
@@ -5449,6 +5818,7 @@
 
       const row = document.createElement('div');
       row.className = `excaliup-vault-item ${isActive ? 'active' : ''}`;
+      row.setAttribute('draggable', 'true');
       row.innerHTML = `
         <button class="excaliup-vault-item-star ${isStarred ? 'starred' : ''}" title="${isStarred ? 'Unfavorite' : 'Favorite'}">
           <iconify-icon icon="${isStarred ? 'lucide:star' : 'lucide:star'}"></iconify-icon>
@@ -5465,6 +5835,16 @@
           <iconify-icon icon="lucide:more-vertical"></iconify-icon>
         </button>
       `;
+
+      row.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('text/plain', file.path);
+        e.dataTransfer.effectAllowed = 'move';
+        row.classList.add('dragging');
+      });
+
+      row.addEventListener('dragend', () => {
+        row.classList.remove('dragging');
+      });
 
       const starBtn = row.querySelector('.excaliup-vault-item-star');
       starBtn.addEventListener('click', (e) => toggleVaultFavorite(e, file.path));
