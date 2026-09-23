@@ -16,14 +16,14 @@ The system SHALL allow the user to select and connect a local directory as their
 - **THEN** the system retrieves the directory handle from IndexedDB and displays the connected vault status or a single-click re-authorization prompt if browser permissions lapsed.
 
 ### Requirement: In-Canvas Smart Status and Launcher Button
-The system SHALL render a dedicated status button (`Excaliup-save`) in the Excalidraw top bar adjacent to the drawing title indicating real-time sync state.
+The system SHALL render a dedicated vault status button in the Excalidraw top bar, docked beside the main menu, showing the open drawing name and real-time sync state.
 
 #### Scenario: Visual status reflection
-- **WHEN** the canvas state transitions between synced, saving, unconfigured, or permission-required
+- **WHEN** the canvas state transitions between synced, unsaved changes (pending), saving, error, unconfigured, or permission-required
 - **THEN** the status button updates its visual indicator (e.g. green dot for synced, pulse for saving, warning for permission needed) and provides descriptive tooltip feedback.
 
 #### Scenario: Toggling the file manager drawer
-- **WHEN** the user clicks the `Excaliup-save` button
+- **WHEN** the user clicks the vault status button
 - **THEN** the system toggles the visibility of the local vault file manager drawer.
 
 ### Requirement: Debounced Background Auto-Saving
@@ -99,3 +99,22 @@ The system SHALL load a selected drawing from disk into the active Excalidraw in
 #### Scenario: Loading a drawing from the vault
 - **WHEN** the user clicks a drawing in the file manager drawer
 - **THEN** the system saves any pending edits to the previous file, parses the selected `.excalidraw` JSON file, updates Excalidraw's scene via the application API, sets the active file binding, and updates the canvas title to match the file name.
+
+### Requirement: No Silent Overwrites
+The system SHALL never replace an existing drawing file as a side effect of saving, renaming, duplicating, moving, or creating drawings.
+
+#### Scenario: Name collisions
+- **WHEN** a rename or move targets a name that already exists in the destination folder
+- **THEN** the system refuses the operation and explains why, leaving both files untouched.
+
+#### Scenario: Automatic names
+- **WHEN** a duplicate, a new drawing, or the first auto-save of an unsaved scene needs a file name that is taken
+- **THEN** the system picks the next free name (`Name (2)`, `Name (Copy 2)`, …).
+
+#### Scenario: Restoring after reload
+- **WHEN** Excalidraw restores its own scene after a page reload
+- **THEN** the system re-links it to the last opened drawing only if they share element ids; otherwise the scene is saved under a new unique name.
+
+#### Scenario: Undo after opening a drawing
+- **WHEN** the user opens a drawing from the vault and then presses Undo
+- **THEN** the previous drawing is not restored, because opening a drawing clears the undo history.

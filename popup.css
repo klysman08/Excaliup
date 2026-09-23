@@ -412,3 +412,9 @@ input:disabled + .slider {
   border-color: var(--primary-accent);
   background-color: hsl(240, 8%, 22%);
 }
+
+.card-row--sub {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--card-border);
+}

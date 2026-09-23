@@ -11,6 +11,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const versionLabel = document.getElementById('versionLabel');
   
   const flowToggle = document.getElementById('flowToggle');
+  const reducedMotionToggle = document.getElementById('reducedMotionToggle');
 
   versionLabel.textContent = `v${chrome.runtime.getManifest().version}`;
 
@@ -49,6 +50,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     gifToggle.disabled = !status.connected;
     animatedSvgToggle.disabled = !status.connected;
     flowToggle.disabled = !status.connected;
+    reducedMotionToggle.disabled = !status.connected;
     gifSpeed.disabled = !status.connected;
 
     // Load current settings from response or use defaults
@@ -56,12 +58,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       gifsEnabled: status.enabled,
       animatedSvgsEnabled: true,
       flowEnabled: true,
-      gifSpeed: 1
+      gifSpeed: 1,
+      respectReducedMotion: true
     };
 
     gifToggle.checked = settings.gifsEnabled;
     animatedSvgToggle.checked = settings.animatedSvgsEnabled !== false;
     flowToggle.checked = settings.flowEnabled;
+    reducedMotionToggle.checked = settings.respectReducedMotion !== false;
     gifSpeed.value = settings.gifSpeed || 1;
 
     gifSettingsGroup.style.display = settings.gifsEnabled ? 'flex' : 'none';
@@ -76,7 +80,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         gifsEnabled: gifToggle.checked,
         animatedSvgsEnabled: animatedSvgToggle.checked,
         flowEnabled: flowToggle.checked,
-        gifSpeed: parseFloat(gifSpeed.value)
+        gifSpeed: parseFloat(gifSpeed.value),
+        respectReducedMotion: reducedMotionToggle.checked
       };
       
       gifSettingsGroup.style.display = currentSettings.gifsEnabled ? 'flex' : 'none';
@@ -89,6 +94,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     gifToggle.onchange = updateSettings;
     animatedSvgToggle.onchange = updateSettings;
     flowToggle.onchange = updateSettings;
+    reducedMotionToggle.onchange = updateSettings;
     gifSpeed.onchange = updateSettings;
   }
 
@@ -102,6 +108,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     animatedSvgToggle.checked = false;
     flowToggle.disabled = true;
     flowToggle.checked = false;
+    reducedMotionToggle.disabled = true;
     gifSpeed.disabled = true;
     gifSettingsGroup.style.display = 'none';
     gifCount.textContent = "0";

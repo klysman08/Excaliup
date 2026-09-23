@@ -46,7 +46,7 @@
   <main class="container">
     <section class="hero" aria-labelledby="hero-title">
       <div class="hero-content">
-        <span class="pixel-badge" style="margin-bottom:15px;">v5.0.0 RELEASE</span>
+        <span class="pixel-badge" style="margin-bottom:15px;">v5.5.0 RELEASE</span>
         <h1 id="hero-title">Auto-Save & Animate<br><span style="color:var(--color-primary)">Whiteboards</span></h1>
         <p class="hero-subtitle">
           Save drawings to local disk vaults with background auto-sync, animate GIFs and SVGs, render custom motion path flows, and browse the complete Iconify library directly inside Excalidraw.
@@ -100,10 +100,10 @@
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px;">
         <!-- Card 1: Local Vault -->
         <div class="pixel-card interactive" style="margin-bottom: 0;">
-          <span class="pixel-badge success" style="margin-bottom: 15px;">v5.0 FEATURE</span>
+          <span class="pixel-badge success" style="margin-bottom: 15px;">REDESIGNED IN v5.5</span>
           <h3 style="font-family: var(--font-retro); font-size: 1.6rem; color: var(--color-primary); margin-bottom: 10px;">📁 Local Vault & Auto-Save</h3>
           <p style="font-size: 0.95rem; margin: 0;">
-            Connect any local folder on your computer as your drawing vault. Background debounced auto-sync (1.2s) automatically saves scene changes to standard <code>.excalidraw</code> files on disk. Features an in-canvas status pill (<code>Synced</code> / <code>Saving...</code>), slide-over file manager drawer with subfolders, breadcrumbs, favorites, search, and drag-and-drop file movement.
+            Connect any local folder on your computer as your drawing vault. Background debounced auto-sync (1.2s) automatically saves scene changes to standard <code>.excalidraw</code> files on disk. Features an in-canvas status button, a theme-aware file manager with subfolders, breadcrumbs, All / Starred / Recent views, vault-wide search, keyboard navigation, drag-and-drop file movement, and protection against accidental overwrites.
           </p>
         </div>
         <!-- Card 2: Iconify -->
@@ -111,15 +111,15 @@
           <span class="pixel-badge" style="margin-bottom: 15px; background: var(--color-primary); color: white;">300K+ ICONS</span>
           <h3 style="font-family: var(--font-retro); font-size: 1.6rem; color: var(--color-primary); margin-bottom: 10px;">🎨 Complete Iconify Library</h3>
           <p style="font-size: 0.95rem; margin: 0;">
-            Browse 200+ icon collections (Lucide, Tabler, Material, Phosphor, Font Awesome) directly via a glassmorphic sidebar panel. Star favorite icons, filter by collections or category (including native Animated SVGs), search instantly across 300,000+ icons, and drag-and-drop or click to paste SVGs. Open/close with the <b>B</b> shortcut.
+            Browse 200+ icon collections (Lucide, Tabler, Material, Phosphor, Font Awesome) directly via a sidebar panel. Star favorite icons, filter by collections or category (including native Animated SVGs), search instantly across 300,000+ icons, and click or drag icons onto the canvas in your stroke color at S, M, or L size. Open/close with the <b>B</b> shortcut.
           </p>
         </div>
         <!-- Card 3: Flows -->
         <div class="pixel-card interactive" style="margin-bottom: 0;">
-          <span class="pixel-badge" style="margin-bottom: 15px; background: var(--color-info); color: white;">10 MOTION STYLES</span>
+          <span class="pixel-badge" style="margin-bottom: 15px; background: var(--color-info); color: white;">8 MOTION STYLES</span>
           <h3 style="font-family: var(--font-retro); font-size: 1.6rem; color: var(--color-primary); margin-bottom: 10px;">🌊 Line & Arrow Flows</h3>
           <p style="font-size: 0.95rem; margin: 0;">
-            Animate flows along paths and arrows on-demand. Choose from 10 motion styles: Particles, Marching Ants, Gradient Pulse, Ripple Wave, Packet Train, Snake Trail, Comet, Electricity, Wave, and Dual Flow. Fine-tune speed, direction, element size (1-5), spacing (20px-120px), and glow levels (None to Strong).
+            Animate flows along paths and arrows on-demand. Choose from 8 motion styles: Particles, Marching Ants, Gradient Pulse, Ripple Wave, Packet Train, Comet, Wave, and Dual Flow. Give each effect its own color, and fine-tune speed, direction, element size (1-5), spacing (20px-120px), and glow levels (None to Strong). A new batched renderer makes the heaviest effects up to 10x faster.
           </p>
         </div>
         <!-- Card 4: Media -->
@@ -258,7 +258,6 @@
                 <button class="sim-toolbar-btn active" data-style="particles" title="Particles style">● Particles</button>
                 <button class="sim-toolbar-btn" data-style="dashes" title="Marching Ants style">⋯ Ants</button>
                 <button class="sim-toolbar-btn" data-style="comet" title="Comet style">☄️ Comet</button>
-                <button class="sim-toolbar-btn" data-style="snake" title="Snake Trail style">🐍 Snake</button>
                 <button class="sim-toolbar-btn" data-style="pulse" title="Gradient Pulse style">✨ Pulse</button>
                 <button class="sim-toolbar-btn" data-style="ripple" title="Ripple Wave style">🌊 Ripple</button>
                 <div class="sim-toolbar-divider"></div>
@@ -277,7 +276,7 @@
                 <div class="sim-logo">
                   <span class="sim-logo-bold">Excali</span><span class="sim-logo-light">Up</span>
                 </div>
-                <div class="sim-version">v5.0.0</div>
+                <div class="sim-version">v5.5.0</div>
               </header>
 
               <!-- Connection Status Banner -->
@@ -365,7 +364,7 @@
                 <div class="sim-tips">
                   <span style="font-size:1.1rem;">💡</span>
                   <div style="font-size:0.7rem; line-height:1.3;">
-                    <b>v5.0 Local Vault:</b> Click the <b>Synced</b> button on the canvas to open your local folder drawer and manage drawings!
+                    <b>v5.5:</b> Open the redesigned Local Vault from the canvas, and give each animated arrow its own color!
                   </div>
                 </div>
               </div>
@@ -459,7 +458,7 @@
           <div class="step-number">03</div>
           <h3 class="step-title">Connect & Sketch</h3>
           <p class="step-desc">
-            Open <a href="https://excalidraw.com" target="_blank" style="color:var(--color-primary); text-decoration:underline;">excalidraw.com</a>, click <b>Excaliup-save</b> to connect a local folder vault, and start drawing with flows & GIFs!
+            Open <a href="https://excalidraw.com" target="_blank" style="color:var(--color-primary); text-decoration:underline;">excalidraw.com</a>, click the <b>Vault</b> button next to the menu to connect a local folder, and start drawing with flows & GIFs!
           </p>
         </div>
       </div>

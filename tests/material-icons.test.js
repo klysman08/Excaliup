@@ -10,7 +10,7 @@ test('Iconify is packaged locally and the picker supports all collections', () =
   const injectSource = fs.readFileSync(path.join(root, 'inject.js'), 'utf8');
 
   assert.ok(mainWorldScript);
-  assert.equal(manifest.version, '5.0.0');
+  assert.equal(manifest.version, '5.5.0');
   assert.equal(mainWorldScript.js[0], 'vendor/iconify-icon.min.js');
   assert.ok(fs.existsSync(path.join(root, 'vendor', 'iconify-icon.min.js')));
   assert.match(injectSource, /https:\/\/api\.iconify\.design\/collections/);
@@ -28,7 +28,11 @@ test('Iconify is packaged locally and the picker supports all collections', () =
   assert.match(injectSource, /excaliup_icon_favorites/);
   assert.match(injectSource, /data-view="favorites"/);
   assert.match(injectSource, /class="excaligif-icon-favorite/);
-  assert.match(injectSource, /Core\.sizeSvgForCanvas\(cleanedSvg, 96\)/);
+  assert.match(injectSource, /Core\.sizeSvgForCanvas\(cleanedSvg, size\)/);
+  assert.match(injectSource, /const ICON_INSERT_SIZES = \[48, 96, 160\]/);
+  assert.match(injectSource, /excaliup_icon_prefs/);
+  assert.match(injectSource, /document\.dispatchEvent\(new ClipboardEvent\('paste'/);
+  assert.doesNotMatch(injectSource, /document\.activeElement\.dispatchEvent/);
   assert.match(injectSource, /Core\.getSvgIntrinsicSize\(markup, 96\)/);
   assert.match(injectSource, /e\.key\.toLowerCase\(\) === 'b'/);
   assert.match(injectSource, /class="excaligif-icons-coffee"/);

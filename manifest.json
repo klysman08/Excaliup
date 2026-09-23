@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Excali Up: Local Vault, Motion Effects & GIFs",
   "short_name": "Excali Up",
-  "version": "5.0.0",
-  "description": "Auto-save drawings to local disk vaults, animate GIFs and SVGs, add motion effects, and browse Iconify inside Excalidraw.",
+  "version": "5.5.0",
+  "description": "Auto-save drawings to local folders, animate GIFs and SVGs, add colorful arrow motion effects, and browse Iconify in Excalidraw.",
   "homepage_url": "https://excaliup.astrofocus.app/",
   "icons": {
     "16": "icons/icon16.png",
@@ -30,7 +30,7 @@
     },
     {
       "matches": ["https://excalidraw.com/*"],
-      "js": ["vendor/iconify-icon.min.js", "omggif.js", "excaliup-core.js", "inject.js"],
+      "js": ["vendor/iconify-icon.min.js", "omggif.js", "excaliup-core.js", "excaliup-flow.js", "inject.js"],
       "run_at": "document_end",
       "world": "MAIN"
     }

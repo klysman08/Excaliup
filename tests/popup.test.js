@@ -16,6 +16,7 @@ test('popup reads the manifest version and reports flow-only runtime as active',
     'engineStatus',
     'versionLabel',
     'flowToggle',
+    'reducedMotionToggle',
     'gifSpeed',
     'gifSettingsGroup',
     'animatedCount'
@@ -36,7 +37,7 @@ test('popup reads the manifest version and reports flow-only runtime as active',
     runtime: {
       lastError: null,
       getManifest() {
-        return { version: '5.0.0' };
+        return { version: '5.5.0' };
       }
     },
     tabs: {
@@ -65,21 +66,25 @@ test('popup reads the manifest version and reports flow-only runtime as active',
   vm.runInNewContext(source, { chrome, console, document }, { filename: 'popup.js' });
   await onReady();
 
-  assert.equal(elements.get('versionLabel').textContent, 'v5.0.0');
+  assert.equal(elements.get('versionLabel').textContent, 'v5.5.0');
   assert.equal(elements.get('gifToggle').checked, false);
   assert.equal(elements.get('animatedSvgToggle').checked, true);
   assert.equal(elements.get('flowToggle').checked, true);
   assert.equal(elements.get('gifSettingsGroup').style.display, 'none');
   assert.equal(elements.get('gifCount').textContent, 2);
   assert.equal(elements.get('engineStatus').textContent, 'Running');
+  assert.equal(elements.get('reducedMotionToggle').checked, true);
+  assert.equal(elements.get('reducedMotionToggle').disabled, false);
 
   elements.get('animatedSvgToggle').checked = false;
+  elements.get('reducedMotionToggle').checked = false;
   elements.get('animatedSvgToggle').onchange();
   assert.deepEqual({ ...messages.at(-1).settings }, {
     gifsEnabled: false,
     animatedSvgsEnabled: false,
     flowEnabled: true,
-    gifSpeed: 1
+    gifSpeed: 1,
+    respectReducedMotion: false
   });
 });
 

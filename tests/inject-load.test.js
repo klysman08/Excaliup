@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const core = require('../excaliup-core.js');
+const flow = require('../excaliup-flow.js');
 
 test('injected runtime boots without a canvas and keeps animation settings independent', () => {
   const listeners = new Map();
@@ -28,6 +29,7 @@ test('injected runtime boots without a canvas and keeps animation settings indep
   };
   const window = {
     ExcaliupCore: core,
+    ExcaliupFlow: flow,
     addEventListener() {},
     devicePixelRatio: 1
   };
@@ -82,6 +84,7 @@ test('injected runtime boots without a canvas and keeps animation settings indep
     gifsEnabled: false,
     animatedSvgsEnabled: true,
     flowEnabled: true,
-    gifSpeed: 2
+    gifSpeed: 2,
+    respectReducedMotion: true
   });
 });

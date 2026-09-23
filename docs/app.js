@@ -424,15 +424,6 @@ document.addEventListener('DOMContentLoaded', () => {
           `;
         }
         flowContent = `<g class="flow-comet ${glow !== 'none' ? 'glow-' + glow : ''}">${circles}</g>`;
-      } else if (style === 'snake') {
-        const snakeSpeed = speed === 'slow' ? '4s' : (speed === 'fast' ? '0.8s' : '2s');
-        const snakeDir = direction === 'reverse' ? 'reverse' : 'normal';
-        flowContent = `
-          <path d="${points}" class="flow-arrow-line flow-snake snake-animation" 
-                stroke="var(--color-primary)" stroke-width="${strokeWidth * 1.5}" 
-                stroke-dasharray="50, 150" fill="none" 
-                style="animation-duration: ${snakeSpeed}; animation-direction: ${snakeDir};" />
-        `;
       } else if (style === 'pulse') {
         const pulseSpeed = speed === 'slow' ? '3s' : (speed === 'fast' ? '0.6s' : '1.5s');
         flowContent = `

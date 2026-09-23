@@ -37,6 +37,7 @@ def package_extension():
         "manifest.json",
         "content.js",
         "excaliup-core.js",
+        "excaliup-flow.js",
         "inject.js",
         "omggif.js",
         "popup.html",

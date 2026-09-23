@@ -1521,24 +1521,6 @@ body.dark-mode .sim-iconify-panel {
   transform-box: fill-box;
 }
 
-.flow-snake {
-  stroke-linecap: round;
-}
-
-/* CSS keyframes for new styles */
-@keyframes simSnakeFlow {
-  from {
-    stroke-dashoffset: 0;
-  }
-  to {
-    stroke-dashoffset: -200;
-  }
-}
-
-.snake-animation {
-  animation: simSnakeFlow 2s linear infinite;
-}
-
 @keyframes simPulseFlow {
   0% {
     stroke-width: 2px;

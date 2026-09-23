@@ -14,10 +14,16 @@ test('normalizes settings and rejects invalid values', () => {
     gifsEnabled: false,
     animatedSvgsEnabled: false,
     flowEnabled: true,
-    gifSpeed: 2
+    gifSpeed: 2,
+    respectReducedMotion: true
   });
 
   assert.equal(core.normalizeSettings({}).animatedSvgsEnabled, true);
+  assert.equal(core.normalizeSettings({ respectReducedMotion: false }).respectReducedMotion, false);
+  assert.equal(
+    core.normalizeSettings({}, { ...core.DEFAULT_SETTINGS, respectReducedMotion: false }).respectReducedMotion,
+    false
+  );
 });
 
 test('normalizes element configuration enums and ranges', () => {
@@ -34,14 +40,27 @@ test('normalizes element configuration enums and ranges', () => {
     direction: 'forward',
     particleSize: 5,
     particleSpacing: 20,
-    glowIntensity: 'strong'
+    glowIntensity: 'strong',
+    color: null
   });
 });
 
-test('accepts every extended motion style', () => {
-  for (const style of ['comet', 'electricity', 'wave', 'dual']) {
+test('normalizes effect colors and keeps null as "match the line"', () => {
+  assert.equal(core.normalizeElementConfig({ color: '#E03131' }).color, '#e03131');
+  assert.equal(core.normalizeElementConfig({ color: '#abc' }).color, '#aabbcc');
+  assert.equal(core.normalizeElementConfig({ color: 'red' }).color, null);
+  assert.equal(core.normalizeElementConfig({ color: 'url(javascript:1)' }).color, null);
+  assert.equal(core.normalizeElementConfig({}, { color: '#123456' }).color, '#123456');
+  assert.equal(core.normalizeElementConfig({ color: null }, { color: '#123456' }).color, null);
+});
+
+test('accepts every motion style and maps retired ones', () => {
+  for (const style of core.FLOW_STYLE_IDS) {
     assert.equal(core.normalizeElementConfig({ style }).style, style);
   }
+  assert.deepEqual([...core.FLOW_STYLE_IDS].sort(), ['comet', 'dashes', 'dual', 'gradient', 'particles', 'ripple', 'train', 'wave']);
+  assert.equal(core.normalizeElementConfig({ style: 'snake' }).style, 'comet');
+  assert.equal(core.normalizeElementConfig({ style: 'electricity' }).style, 'wave');
 });
 
 test('detects native and CSS animated SVG markup', () => {
@@ -330,3 +349,111 @@ test('scans mock directory structure and resolves drawing files', async () => {
 
 
 
+
+function createMemoryVault(files) {
+  function createDir(entries) {
+    return {
+      kind: 'directory',
+      entries: async function* () {
+        for (const entry of Object.entries(entries)) yield entry;
+      },
+      async getDirectoryHandle(name, { create } = {}) {
+        if (!entries[name]) {
+          if (!create) throw new Error(`Directory ${name} not found`);
+          entries[name] = createDir({});
+        }
+        return entries[name];
+      },
+      async getFileHandle(name, { create } = {}) {
+        if (!entries[name]) {
+          if (!create) throw new Error(`File ${name} not found`);
+          entries[name] = createFile('');
+        }
+        return entries[name];
+      },
+      async removeEntry(name) {
+        delete entries[name];
+      }
+    };
+  }
+
+  function createFile(content) {
+    const file = {
+      kind: 'file',
+      content,
+      getFile: async () => ({ size: file.content.length, lastModified: 1, text: async () => file.content }),
+      createWritable: async () => ({
+        write: async (data) => { file.content = data; },
+        close: async () => {}
+      })
+    };
+    return file;
+  }
+
+  const root = createDir({});
+  return {
+    root,
+    async seed() {
+      for (const [filePath, content] of Object.entries(files)) {
+        await core.writeDrawingFile(root, filePath, content);
+      }
+      return root;
+    }
+  };
+}
+
+test('finds unique drawing paths without overwriting existing files', async () => {
+  const vault = createMemoryVault({
+    'Plan.excalidraw': 'a',
+    'Plan (2).excalidraw': 'b',
+    'work/Plan (Copy).excalidraw': 'c'
+  });
+  const root = await vault.seed();
+
+  assert.equal(await core.drawingFileExists(root, 'Plan.excalidraw'), true);
+  assert.equal(await core.drawingFileExists(root, 'missing/Plan.excalidraw'), false);
+  assert.equal(await core.getUniqueDrawingPath(root, 'Fresh.excalidraw'), 'Fresh.excalidraw');
+  assert.equal(await core.getUniqueDrawingPath(root, 'Plan.excalidraw'), 'Plan (3).excalidraw');
+  assert.equal(
+    await core.getUniqueDrawingPath(root, 'work/Plan (Copy).excalidraw', (stem, index) => `Plan (Copy ${index})`),
+    'work/Plan (Copy 2).excalidraw'
+  );
+});
+
+test('renames and moves drawings but refuses to overwrite', async () => {
+  const vault = createMemoryVault({
+    'alpha.excalidraw': 'alpha',
+    'beta.excalidraw': 'beta',
+    'archive/alpha.excalidraw': 'old alpha'
+  });
+  const root = await vault.seed();
+
+  await assert.rejects(
+    core.renameDrawingFile(root, 'alpha.excalidraw', 'beta.excalidraw'),
+    { name: 'VaultEntryExistsError' }
+  );
+  assert.equal(await core.readDrawingFile(root, 'alpha.excalidraw'), 'alpha');
+
+  assert.equal(await core.renameDrawingFile(root, 'alpha.excalidraw', 'gamma.excalidraw'), 'gamma.excalidraw');
+  assert.equal(await core.readDrawingFile(root, 'gamma.excalidraw'), 'alpha');
+  assert.equal(await core.drawingFileExists(root, 'alpha.excalidraw'), false);
+
+  assert.equal(await core.renameDrawingFile(root, 'gamma.excalidraw', 'Gamma.excalidraw'), 'Gamma.excalidraw');
+  assert.equal(await core.readDrawingFile(root, 'Gamma.excalidraw'), 'alpha');
+  const listing = await core.scanVaultDirectory(root, '');
+  assert.deepEqual(listing.files.map((file) => file.name).sort(), ['Gamma.excalidraw', 'beta.excalidraw']);
+
+  await core.writeDrawingFile(root, 'alpha.excalidraw', 'new alpha');
+  await assert.rejects(
+    core.moveDrawingFile(root, 'alpha.excalidraw', 'archive'),
+    { name: 'VaultEntryExistsError' }
+  );
+  assert.equal(await core.readDrawingFile(root, 'archive/alpha.excalidraw'), 'old alpha');
+  assert.equal(await core.readDrawingFile(root, 'alpha.excalidraw'), 'new alpha');
+});
+
+test('sanitizing names strips leading dots and control characters', () => {
+  assert.equal(core.sanitizeFileName('..'), 'untitled');
+  assert.equal(core.sanitizeFileName('.hidden plan'), 'hidden plan');
+  assert.equal(core.sanitizeFileName('tab\tname'), 'tab name');
+});

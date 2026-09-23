@@ -15,9 +15,11 @@
   'use strict';
 
   const FLOW_STYLES = new Set([
-    'particles', 'dashes', 'gradient', 'ripple', 'train', 'snake',
-    'comet', 'electricity', 'wave', 'dual'
+    'particles', 'dashes', 'gradient', 'ripple', 'train',
+    'comet', 'wave', 'dual'
   ]);
+  // Retired styles keep working in saved drawings by mapping to the closest look.
+  const LEGACY_FLOW_STYLES = Object.freeze({ snake: 'comet', electricity: 'wave' });
   const FLOW_SPEEDS = new Set(['slow', 'medium', 'fast']);
   const FLOW_DIRECTIONS = new Set(['forward', 'reverse', 'bounce']);
   const GLOW_INTENSITIES = new Set(['none', 'subtle', 'medium', 'strong']);
@@ -26,7 +28,8 @@
     gifsEnabled: true,
     animatedSvgsEnabled: true,
     flowEnabled: true,
-    gifSpeed: 1
+    gifSpeed: 1,
+    respectReducedMotion: true
   });
 
   const DEFAULT_ELEMENT_CONFIG = Object.freeze({
@@ -35,8 +38,23 @@
     direction: 'forward',
     particleSize: 3,
     particleSpacing: 50,
-    glowIntensity: 'medium'
+    glowIntensity: 'medium',
+    // null follows the element's stroke colour; otherwise a #rrggbb override.
+    color: null
   });
+
+  function normalizeFlowColor(value) {
+    if (typeof value !== 'string') return undefined;
+    const hex = value.trim().toLowerCase();
+    if (/^#[0-9a-f]{6}$/.test(hex)) return hex;
+    if (/^#[0-9a-f]{3}$/.test(hex)) return `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}`;
+    return undefined;
+  }
+
+  function normalizeFlowStyle(value) {
+    if (FLOW_STYLES.has(value)) return value;
+    return Object.prototype.hasOwnProperty.call(LEGACY_FLOW_STYLES, value) ? LEGACY_FLOW_STYLES[value] : undefined;
+  }
 
   function finiteNumber(value, fallback) {
     const parsed = typeof value === 'number' ? value : Number(value);
@@ -57,7 +75,10 @@
         ? source.animatedSvgsEnabled
         : base.animatedSvgsEnabled !== false,
       flowEnabled: typeof source.flowEnabled === 'boolean' ? source.flowEnabled : !!base.flowEnabled,
-      gifSpeed: clamp(source.gifSpeed, 0.5, 2, finiteNumber(base.gifSpeed, 1))
+      gifSpeed: clamp(source.gifSpeed, 0.5, 2, finiteNumber(base.gifSpeed, 1)),
+      respectReducedMotion: typeof source.respectReducedMotion === 'boolean'
+        ? source.respectReducedMotion
+        : base.respectReducedMotion !== false
     };
   }
 
@@ -65,7 +86,7 @@
     const source = value && typeof value === 'object' ? value : {};
     const base = fallback && typeof fallback === 'object' ? fallback : DEFAULT_ELEMENT_CONFIG;
 
-    const baseStyle = FLOW_STYLES.has(base.style) ? base.style : DEFAULT_ELEMENT_CONFIG.style;
+    const baseStyle = normalizeFlowStyle(base.style) || DEFAULT_ELEMENT_CONFIG.style;
     const baseSpeed = FLOW_SPEEDS.has(base.speed) ? base.speed : DEFAULT_ELEMENT_CONFIG.speed;
     const baseDirection = FLOW_DIRECTIONS.has(base.direction) ? base.direction : DEFAULT_ELEMENT_CONFIG.direction;
     const baseGlow = GLOW_INTENSITIES.has(base.glowIntensity)
@@ -73,7 +94,7 @@
       : DEFAULT_ELEMENT_CONFIG.glowIntensity;
 
     return {
-      style: FLOW_STYLES.has(source.style) ? source.style : baseStyle,
+      style: normalizeFlowStyle(source.style) || baseStyle,
       speed: FLOW_SPEEDS.has(source.speed) ? source.speed : baseSpeed,
       direction: FLOW_DIRECTIONS.has(source.direction) ? source.direction : baseDirection,
       particleSize: Math.round(clamp(source.particleSize, 1, 5, finiteNumber(base.particleSize, 3))),
@@ -83,7 +104,10 @@
         120,
         finiteNumber(base.particleSpacing, 50)
       )),
-      glowIntensity: GLOW_INTENSITIES.has(source.glowIntensity) ? source.glowIntensity : baseGlow
+      glowIntensity: GLOW_INTENSITIES.has(source.glowIntensity) ? source.glowIntensity : baseGlow,
+      color: source.color === null
+        ? null
+        : normalizeFlowColor(source.color) || normalizeFlowColor(base.color) || null
     };
   }
 
@@ -212,34 +236,74 @@
   }
 
   function getPointAtLength(geometry, distance) {
+    return samplePathAtLength(geometry, distance, { x: 0, y: 0, dx: 0, dy: 0 });
+  }
+
+  function findSegmentIndex(segments, distance) {
+    let low = 0;
+    let high = segments.length - 1;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (segments[middle].endDistance >= distance) {
+        high = middle;
+      } else {
+        low = middle + 1;
+      }
+    }
+    return low;
+  }
+
+  function writeSegmentPoint(segment, distance, out) {
+    const progress = (distance - (segment.endDistance - segment.length)) / segment.length;
+    out.x = segment.start.x + progress * (segment.end.x - segment.start.x);
+    out.y = segment.start.y + progress * (segment.end.y - segment.start.y);
+    out.dx = segment.dx;
+    out.dy = segment.dy;
+    return out;
+  }
+
+  function writeEmptyPoint(out) {
+    out.x = 0;
+    out.y = 0;
+    out.dx = 0;
+    out.dy = 0;
+    return out;
+  }
+
+  // Allocation-free variant of getPointAtLength: writes the sample into `out`.
+  function samplePathAtLength(geometry, distance, out) {
     if (!geometry || geometry.totalLength <= 0 || geometry.segments.length === 0) {
-      return { x: 0, y: 0, dx: 0, dy: 0 };
+      return writeEmptyPoint(out);
     }
 
     const normalizedDistance = Math.min(
       geometry.totalLength,
       Math.max(0, finiteNumber(distance, 0))
     );
+    const segment = geometry.segments[findSegmentIndex(geometry.segments, normalizedDistance)];
+    return writeSegmentPoint(segment, normalizedDistance, out);
+  }
 
-    let low = 0;
-    let high = geometry.segments.length - 1;
-    while (low < high) {
-      const middle = Math.floor((low + high) / 2);
-      if (geometry.segments[middle].endDistance >= normalizedDistance) {
-        high = middle;
-      } else {
-        low = middle + 1;
-      }
-    }
+  // Sequential sampler for effects that walk along a path. Moving forward only
+  // advances through neighbouring segments; moving backward falls back to a
+  // binary search, so any access order stays correct.
+  function createPathCursor(geometry) {
+    const segments = geometry && geometry.segments ? geometry.segments : [];
+    const totalLength = geometry && geometry.totalLength > 0 ? geometry.totalLength : 0;
+    let index = 0;
 
-    const segment = geometry.segments[low];
-    const startDistance = segment.endDistance - segment.length;
-    const progress = (normalizedDistance - startDistance) / segment.length;
     return {
-      x: segment.start.x + progress * (segment.end.x - segment.start.x),
-      y: segment.start.y + progress * (segment.end.y - segment.start.y),
-      dx: segment.dx,
-      dy: segment.dy
+      at(distance, out) {
+        if (totalLength <= 0 || segments.length === 0) return writeEmptyPoint(out);
+        const d = distance <= 0 ? 0 : distance >= totalLength ? totalLength : distance;
+        const current = segments[index];
+        if (d < current.endDistance - current.length) {
+          index = findSegmentIndex(segments, d);
+        } else {
+          while (index < segments.length - 1 && segments[index].endDistance < d) index++;
+        }
+        return writeSegmentPoint(segments[index], d, out);
+      }
     };
   }
 
@@ -530,7 +594,13 @@
 
   function sanitizeFileName(name, fallback = 'untitled') {
     if (typeof name !== 'string') return fallback;
-    const clean = name.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ');
+    const clean = name
+      .trim()
+      .replace(/\s+/g, ' ')
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-')
+      // Leading dots would create hidden entries the vault never lists.
+      .replace(/^\.+/, '')
+      .trim();
     return clean || fallback;
   }
 
@@ -696,6 +766,47 @@
     await dirHandle.removeEntry(fileName);
   }
 
+  async function drawingFileExists(rootHandle, relativeFilePath) {
+    const cleanPath = normalizeVaultPath(relativeFilePath);
+    if (!rootHandle || !cleanPath) return false;
+    const segments = cleanPath.split('/');
+    const fileName = segments.pop();
+    try {
+      const dirHandle = await resolveDirectoryHandle(rootHandle, segments.join('/'), false);
+      await dirHandle.getFileHandle(fileName, { create: false });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function splitDrawingPath(relativeFilePath) {
+    const segments = normalizeVaultPath(relativeFilePath).split('/');
+    const fileName = segments.pop() || '';
+    const extensionMatch = fileName.match(/\.excalidraw(?:\.json)?$/i);
+    const extension = extensionMatch ? extensionMatch[0] : '.excalidraw';
+    const stem = extensionMatch ? fileName.slice(0, -extension.length) : fileName;
+    return { folder: segments.join('/'), stem, extension };
+  }
+
+  // Returns `relativeFilePath` when it is free, otherwise the first free
+  // variant named by `nameForIndex(stem, n)` for n = 2, 3, ...
+  async function getUniqueDrawingPath(
+    rootHandle,
+    relativeFilePath,
+    nameForIndex = (stem, index) => `${stem} (${index})`
+  ) {
+    const { folder, stem, extension } = splitDrawingPath(relativeFilePath);
+    const build = (name) => (folder ? `${folder}/${name}${extension}` : `${name}${extension}`);
+    const first = build(stem);
+    if (!(await drawingFileExists(rootHandle, first))) return first;
+    for (let index = 2; index < 1000; index++) {
+      const candidate = build(nameForIndex(stem, index));
+      if (!(await drawingFileExists(rootHandle, candidate))) return candidate;
+    }
+    return build(`${stem} ${Date.now()}`);
+  }
+
   async function scanAllVaultFolders(rootHandle, currentPath = '', depth = 0) {
     if (!rootHandle) return [];
     const cleanCurrent = normalizeVaultPath(currentPath);
@@ -731,11 +842,48 @@
     }
 
     const targetRelativePath = cleanTargetFolder ? `${cleanTargetFolder}/${fileName}` : fileName;
+    if (await drawingFileExists(rootHandle, targetRelativePath)) {
+      throw createExistsError(targetRelativePath);
+    }
     const content = await readDrawingFile(rootHandle, cleanSource);
     await writeDrawingFile(rootHandle, targetRelativePath, content);
     await deleteDrawingFile(rootHandle, cleanSource);
 
     return { success: true, newRelativePath: targetRelativePath, moved: true };
+  }
+
+  function createExistsError(relativePath) {
+    const error = new Error(`A drawing already exists at ${relativePath}`);
+    error.name = 'VaultEntryExistsError';
+    error.path = relativePath;
+    return error;
+  }
+
+  // Renames without ever overwriting another drawing. Case-only renames go
+  // through a hidden temporary file because the underlying file system may be
+  // case-insensitive (Windows, macOS), where "a" and "A" are the same entry.
+  async function renameDrawingFile(rootHandle, sourceRelativePath, targetRelativePath) {
+    const cleanSource = normalizeVaultPath(sourceRelativePath);
+    const cleanTarget = normalizeVaultPath(targetRelativePath);
+    if (!cleanSource || !cleanTarget) throw new Error('Source and target paths are required');
+    if (cleanSource === cleanTarget) return cleanTarget;
+
+    const content = await readDrawingFile(rootHandle, cleanSource);
+    if (cleanSource.toLowerCase() === cleanTarget.toLowerCase()) {
+      const folder = cleanSource.split('/').slice(0, -1).join('/');
+      const tempName = `.excaliup-rename-${Date.now()}.excalidraw`;
+      const tempPath = folder ? `${folder}/${tempName}` : tempName;
+      await writeDrawingFile(rootHandle, tempPath, content);
+      await deleteDrawingFile(rootHandle, cleanSource);
+      await writeDrawingFile(rootHandle, cleanTarget, content);
+      await deleteDrawingFile(rootHandle, tempPath);
+      return cleanTarget;
+    }
+
+    if (await drawingFileExists(rootHandle, cleanTarget)) throw createExistsError(cleanTarget);
+    await writeDrawingFile(rootHandle, cleanTarget, content);
+    await deleteDrawingFile(rootHandle, cleanSource);
+    return cleanTarget;
   }
 
   async function deleteVaultFolder(rootHandle, relativeFolderPath, recursive = true) {
@@ -808,11 +956,14 @@
     DEFAULT_SETTINGS,
     DEFAULT_ELEMENT_CONFIG,
     DEFAULT_VAULT_METADATA,
+    FLOW_STYLE_IDS: Object.freeze([...FLOW_STYLES]),
     normalizeSettings,
     normalizeElementConfig,
     getPathPoints,
     getPathGeometry,
     getPointAtLength,
+    samplePathAtLength,
+    createPathCursor,
     getElementOffset,
     getViewportBounds,
     intersectsBounds,
@@ -840,6 +991,9 @@
     readDrawingFile,
     writeDrawingFile,
     deleteDrawingFile,
+    drawingFileExists,
+    getUniqueDrawingPath,
+    renameDrawingFile,
     moveDrawingFile,
     createVaultSubfolder,
     deleteVaultFolder,

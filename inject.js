@@ -5,7 +5,8 @@
   console.log("[Excali Up] Inject script loaded.");
 
   const Core = window.ExcaliupCore;
-  if (!Core) {
+  const Flow = window.ExcaliupFlow;
+  if (!Core || !Flow) {
     console.error('[Excali Up] Runtime core is unavailable.');
     return;
   }
@@ -50,6 +51,26 @@
     console.error('[Excali Up] Error loading favorite icons:', error);
   }
 
+  // How icons are inserted: tinted with the canvas stroke colour (monochrome
+  // packs only) or kept as published, and at which size.
+  const ICON_INSERT_SIZES = [48, 96, 160];
+  const iconInsertPrefs = { color: 'stroke', size: 96 };
+  try {
+    const savedPrefs = JSON.parse(localStorage.getItem('excaliup_icon_prefs') || '{}');
+    if (savedPrefs.color === 'stroke' || savedPrefs.color === 'original') iconInsertPrefs.color = savedPrefs.color;
+    if (ICON_INSERT_SIZES.includes(savedPrefs.size)) iconInsertPrefs.size = savedPrefs.size;
+  } catch (error) {
+    console.error('[Excali Up] Error loading icon preferences:', error);
+  }
+
+  function saveIconInsertPrefs() {
+    try {
+      localStorage.setItem('excaliup_icon_prefs', JSON.stringify(iconInsertPrefs));
+    } catch (error) {
+      console.error('[Excali Up] Error saving icon preferences:', error);
+    }
+  }
+
   function saveFavoriteIcons() {
     try {
       localStorage.setItem('excaliup_icon_favorites', JSON.stringify([...favoriteIcons]));
@@ -63,14 +84,14 @@
   let vaultMetadata = { ...Core.DEFAULT_VAULT_METADATA };
   let currentVaultRelativePath = '';
   let activeDrawingRelativePath = null;
-  let vaultSyncState = 'unlinked'; // 'unlinked' | 'synced' | 'saving' | 'permission-required' | 'error'
+  let vaultSyncState = 'unlinked'; // 'unlinked' | 'pending' | 'saving' | 'synced' | 'permission-required' | 'error'
   let autoSaveTimer = null;
   let lastSavedSceneHash = '';
   let vaultDrawerElement = null;
   let vaultStatusButton = null;
   let isVaultDrawerOpen = false;
   let vaultSearchQuery = '';
-  let vaultCurrentView = 'all'; // 'all' | 'favorites'
+  let vaultCurrentView = 'all'; // 'all' | 'favorites' | 'recent'
   let vaultDirectoryData = { currentPath: '', folders: [], files: [] };
   let vaultAllDrawings = [];
 
@@ -80,6 +101,12 @@
   let flowOffset = 0;
   let lastFlowDrawAt = 0;
   const flowFrameBudget = new Core.AdaptiveFrameBudget();
+  const flowRenderer = Flow.createFlowRenderer({ core: Core });
+  let overlayInteractiveCanvas = null;
+  let overlayCanvasElement = null;
+  let overlayContext = null;
+  let overlayIsClear = true;
+  let lastStaticFrameSignature = '';
   const geometryCache = new Map();
 
   // Per-element animation assignments: elementId -> animation configuration
@@ -1052,7 +1079,6 @@
   }
 
   const DEFAULT_ELEMENT_CONFIG = Core.DEFAULT_ELEMENT_CONFIG;
-  const getPointAtLength = Core.getPointAtLength;
 
   function getCachedGeometry(element) {
     const cached = geometryCache.get(element.id);
@@ -1079,11 +1105,81 @@
   }
 
   function getElementConfig(elId) {
-    return Core.normalizeElementConfig(animatedElements.get(elId), DEFAULT_ELEMENT_CONFIG);
+    // Every write to animatedElements stores a normalized config already.
+    return animatedElements.get(elId) || DEFAULT_ELEMENT_CONFIG;
   }
 
   function getElementOffset(config, globalOffset) {
     return Core.getElementOffset(config, globalOffset);
+  }
+
+  const reducedMotionQuery = typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-reduced-motion: reduce)')
+    : null;
+
+  function isMotionReduced() {
+    return !!(currentSettings.respectReducedMotion && reducedMotionQuery && reducedMotionQuery.matches);
+  }
+
+  if (reducedMotionQuery && typeof reducedMotionQuery.addEventListener === 'function') {
+    reducedMotionQuery.addEventListener('change', () => {
+      stopOverlayLoop();
+      reconcileFlowRuntime();
+    });
+  }
+
+  function getOverlayTarget() {
+    if (!overlayInteractiveCanvas || !overlayInteractiveCanvas.isConnected) {
+      overlayInteractiveCanvas = document.querySelector('.excalidraw__canvas.interactive');
+    }
+    const interactiveCanvas = overlayInteractiveCanvas;
+    if (!interactiveCanvas || !interactiveCanvas.parentNode) return null;
+
+    if (!overlayCanvasElement || !overlayCanvasElement.isConnected) {
+      overlayCanvasElement = document.getElementById('ExcaliGifOverlayCanvas');
+      if (!overlayCanvasElement) {
+        overlayCanvasElement = document.createElement('canvas');
+        overlayCanvasElement.id = 'ExcaliGifOverlayCanvas';
+        overlayCanvasElement.style.position = 'absolute';
+        overlayCanvasElement.style.top = '0';
+        overlayCanvasElement.style.left = '0';
+        overlayCanvasElement.style.pointerEvents = 'none';
+        interactiveCanvas.parentNode.insertBefore(overlayCanvasElement, interactiveCanvas.nextSibling);
+        if (window.getComputedStyle(interactiveCanvas.parentNode).position === 'static') {
+          interactiveCanvas.parentNode.style.position = 'relative';
+        }
+      }
+      overlayContext = overlayCanvasElement.getContext('2d');
+      overlayIsClear = false;
+    }
+    return { interactiveCanvas, canvas: overlayCanvasElement, ctx: overlayContext };
+  }
+
+  function clearOverlay() {
+    if (overlayIsClear) return;
+    const canvas = overlayCanvasElement && overlayCanvasElement.isConnected
+      ? overlayCanvasElement
+      : document.getElementById('ExcaliGifOverlayCanvas');
+    if (canvas) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+    overlayIsClear = true;
+  }
+
+  function getStaticFrameSignature() {
+    if (!currentApp || !currentApp.state) return '';
+    const state = currentApp.state;
+    const nonce = currentApp.scene && typeof currentApp.scene.getSceneNonce === 'function'
+      ? currentApp.scene.getSceneNonce()
+      : Math.floor(performance.now() / 250);
+    const canvas = overlayInteractiveCanvas;
+    return [
+      state.zoom ? state.zoom.value : 1,
+      state.scrollX,
+      state.scrollY,
+      nonce,
+      canvas ? canvas.clientWidth : 0,
+      canvas ? canvas.clientHeight : 0,
+      animatedElementsRevision
+    ].join('|');
   }
 
   function startOverlayLoop() {
@@ -1099,6 +1195,7 @@
 
     flowFrameBudget.reset(performance.now());
     lastFlowDrawAt = 0;
+    lastStaticFrameSignature = '';
 
     function step(timestamp) {
       overlayAnimationFrameId = null;
@@ -1112,13 +1209,23 @@
         return;
       }
 
-      const frameDelta = lastFlowDrawAt ? timestamp - lastFlowDrawAt : flowFrameBudget.frameInterval;
-      if (!lastFlowDrawAt || frameDelta >= flowFrameBudget.frameInterval - 1) {
-        flowOffset += frameDelta / 16.666;
-        const drawStartedAt = performance.now();
-        drawOverlay(flowOffset);
-        flowFrameBudget.record(timestamp, performance.now() - drawStartedAt, frameDelta);
-        lastFlowDrawAt = timestamp;
+      if (isMotionReduced()) {
+        // Keep effects visible but frozen; only redraw when the view changes.
+        const signature = getStaticFrameSignature();
+        if (signature !== lastStaticFrameSignature) {
+          lastStaticFrameSignature = signature;
+          drawOverlay(flowOffset);
+        }
+      } else {
+        const frameDelta = lastFlowDrawAt ? timestamp - lastFlowDrawAt : flowFrameBudget.frameInterval;
+        if (!lastFlowDrawAt || frameDelta >= flowFrameBudget.frameInterval - 1) {
+          // Clamp long gaps (tab switches, breakpoints) so effects do not jump.
+          flowOffset += Math.min(frameDelta, 100) / 16.666;
+          const drawStartedAt = performance.now();
+          drawOverlay(flowOffset);
+          flowFrameBudget.record(timestamp, performance.now() - drawStartedAt, frameDelta);
+          lastFlowDrawAt = timestamp;
+        }
       }
 
       overlayAnimationFrameId = requestAnimationFrame(step);
@@ -1132,44 +1239,24 @@
       cancelAnimationFrame(overlayAnimationFrameId);
       overlayAnimationFrameId = null;
     }
-    // Clear overlay canvas
-    const overlayCanvas = document.getElementById('ExcaliGifOverlayCanvas');
-    if (overlayCanvas) {
-      const ctx = overlayCanvas.getContext('2d');
-      ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-    }
+    clearOverlay();
     lastFlowDrawAt = 0;
   }
 
   function drawOverlay(offset) {
-    const interactiveCanvas = document.querySelector('.excalidraw__canvas.interactive');
-    if (!interactiveCanvas || !currentApp || !currentSettings.flowEnabled) {
-      const overlayCanvas = document.getElementById('ExcaliGifOverlayCanvas');
-      if (overlayCanvas) {
-        const ctx = overlayCanvas.getContext('2d');
-        ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-      }
+    if (!currentApp || !currentSettings.flowEnabled) {
+      clearOverlay();
       return;
     }
-    
-    let overlayCanvas = document.getElementById('ExcaliGifOverlayCanvas');
-    if (!overlayCanvas) {
-      overlayCanvas = document.createElement('canvas');
-      overlayCanvas.id = 'ExcaliGifOverlayCanvas';
-      overlayCanvas.style.position = 'absolute';
-      overlayCanvas.style.top = '0';
-      overlayCanvas.style.left = '0';
-      overlayCanvas.style.pointerEvents = 'none';
-      interactiveCanvas.parentNode.insertBefore(overlayCanvas, interactiveCanvas.nextSibling);
-      
-      if (interactiveCanvas.parentNode && window.getComputedStyle(interactiveCanvas.parentNode).position === 'static') {
-        interactiveCanvas.parentNode.style.position = 'relative';
-      }
-    }
+    const target = getOverlayTarget();
+    if (!target) return;
+    const { interactiveCanvas, canvas: overlayCanvas, ctx } = target;
 
     const width = interactiveCanvas.clientWidth;
     const height = interactiveCanvas.clientHeight;
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    // Under sustained load the overlay drops to 1x resolution to cut fill cost.
+    const maxPixelRatio = flowFrameBudget.mode === 'full' ? 2 : 1;
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, maxPixelRatio);
     const pixelWidth = Math.round(width * pixelRatio);
     const pixelHeight = Math.round(height * pixelRatio);
     if (overlayCanvas.width !== pixelWidth || overlayCanvas.height !== pixelHeight) {
@@ -1177,70 +1264,47 @@
       overlayCanvas.height = pixelHeight;
       overlayCanvas.style.width = `${width}px`;
       overlayCanvas.style.height = `${height}px`;
+      overlayIsClear = true;
     }
-
-    const ctx = overlayCanvas.getContext('2d');
-    ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-
-    ctx.save();
-    ctx.scale(pixelRatio, pixelRatio);
 
     const zoomVal = currentApp.state.zoom ? currentApp.state.zoom.value : 1;
     const scrollXVal = currentApp.state.scrollX || 0;
     const scrollYVal = currentApp.state.scrollY || 0;
     const viewportBounds = Core.getViewportBounds(width, height, zoomVal, scrollXVal, scrollYVal, 40);
+    const view = {
+      zoom: zoomVal,
+      sampleScale: flowFrameBudget.sampleScale,
+      bounds: viewportBounds
+    };
 
-    ctx.scale(zoomVal, zoomVal);
-    ctx.translate(scrollXVal, scrollYVal);
-
+    // Collect visible work first so an idle overlay is not cleared every frame.
     const elementsMap = getSceneElementsMap();
+    const visible = [];
     for (const elementId of animatedElements.keys()) {
       const el = elementsMap.get(elementId);
-      if (!el || !shouldAnimateElement(el) || (el.type !== 'arrow' && el.type !== 'line')) continue;
-
+      if (!el || !shouldAnimateElement(el)) continue;
       const geometry = getCachedGeometry(el);
       if (geometry.totalLength > 0 && Core.intersectsBounds(geometry.bounds, viewportBounds)) {
-        const config = getElementConfig(el.id);
-        const elOffset = getElementOffset(config, offset);
-
-        switch (config.style) {
-          case 'particles':
-            drawParticles(ctx, el, geometry, elOffset, config);
-            break;
-          case 'dashes':
-            drawDashes(ctx, el, geometry, elOffset, config);
-            break;
-          case 'gradient':
-            drawGradientPulse(ctx, el, geometry, elOffset, config);
-            break;
-          case 'ripple':
-            drawRippleWave(ctx, el, geometry, elOffset, config);
-            break;
-          case 'train':
-            drawPacketTrain(ctx, el, geometry, elOffset, config);
-            break;
-          case 'snake':
-            drawSnakeTrail(ctx, el, geometry, elOffset, config);
-            break;
-          case 'comet':
-            drawComet(ctx, el, geometry, elOffset, config);
-            break;
-          case 'electricity':
-            drawElectricity(ctx, el, geometry, elOffset, config);
-            break;
-          case 'wave':
-            drawFlowWave(ctx, el, geometry, elOffset, config);
-            break;
-          case 'dual':
-            drawDualFlow(ctx, el, geometry, elOffset, config);
-            break;
-          default:
-            drawParticles(ctx, el, geometry, elOffset, config);
-        }
+        visible.push(el, geometry);
       }
     }
 
-    ctx.restore();
+    if (visible.length === 0) {
+      clearOverlay();
+      return;
+    }
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    const scale = pixelRatio * zoomVal;
+    ctx.setTransform(scale, 0, 0, scale, scale * scrollXVal, scale * scrollYVal);
+    for (let index = 0; index < visible.length; index += 2) {
+      const el = visible[index];
+      const config = getElementConfig(el.id);
+      flowRenderer.draw(ctx, el, visible[index + 1], getElementOffset(config, offset), config, view);
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    overlayIsClear = false;
   }
 
   function reconcileRuntime() {
@@ -1295,476 +1359,35 @@
     }
   }
 
-  function getGlowBlur(config) {
-    const intensity = config.glowIntensity || 'medium';
-    switch (intensity) {
-      case 'none': return 0;
-      case 'subtle': return 3;
-      case 'medium': return 6;
-      case 'strong': return 14;
-      default: return 6;
-    }
-  }
-
-  function drawParticles(ctx, el, geometry, offset, config) {
-    const strokeColor = el.strokeColor || '#1e1e1e';
-    const strokeWidth = el.strokeWidth || 2;
-    
-    ctx.save();
-    ctx.fillStyle = strokeColor;
-    
-    const glowBlur = getGlowBlur(config);
-    if (glowBlur > 0) {
-      ctx.shadowColor = strokeColor;
-      ctx.shadowBlur = glowBlur;
-    }
-    
-    const spacing = config.particleSpacing || 50;
-    const sizeFactor = (config.particleSize || 3) / 3;
-    const radius = Math.max(1.5, strokeWidth * 0.85 * sizeFactor);
-    const totalLength = geometry.totalLength;
-    
-    let d = ((offset % spacing) + spacing) % spacing;
-    while (d < totalLength) {
-      const pt = getPointAtLength(geometry, d);
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
-      ctx.fill();
-      d += spacing;
-    }
-    
-    ctx.restore();
-  }
-
-  function drawDashes(ctx, el, geometry, offset, config) {
-    const strokeColor = el.strokeColor || '#1e1e1e';
-    const strokeWidth = el.strokeWidth || 2;
-    
-    ctx.save();
-    ctx.strokeStyle = strokeColor;
-    const sizeFactor = (config.particleSize || 3) / 3;
-    ctx.lineWidth = (strokeWidth + 0.8) * sizeFactor;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    
-    const glowBlur = getGlowBlur(config);
-    if (glowBlur > 0) {
-      ctx.shadowColor = strokeColor;
-      ctx.shadowBlur = glowBlur;
-    }
-    
-    const dashSize = Math.max(4, 8 * sizeFactor);
-    ctx.setLineDash([dashSize, dashSize]);
-    ctx.lineDashOffset = -offset;
-    
-    if (!geometry.path && typeof Path2D !== 'undefined') {
-      geometry.path = new Path2D();
-      const firstPoint = geometry.segments[0].start;
-      geometry.path.moveTo(firstPoint.x, firstPoint.y);
-      for (const segment of geometry.segments) geometry.path.lineTo(segment.end.x, segment.end.y);
-    }
-
-    if (geometry.path) {
-      ctx.stroke(geometry.path);
-    } else {
-      ctx.beginPath();
-      const firstPoint = geometry.segments[0].start;
-      ctx.moveTo(firstPoint.x, firstPoint.y);
-      for (const segment of geometry.segments) ctx.lineTo(segment.end.x, segment.end.y);
-      ctx.stroke();
-    }
-    
-    ctx.restore();
-  }
-
-  // ═══════════════════════════════════════════════
-  // NEW ANIMATION STYLES
-  // ═══════════════════════════════════════════════
-
-  function drawGradientPulse(ctx, el, geometry, offset, config) {
-    const strokeColor = el.strokeColor || '#1e1e1e';
-    const strokeWidth = el.strokeWidth || 2;
-    const totalLength = geometry.totalLength;
-    if (totalLength === 0) return;
-    
-    ctx.save();
-    const sizeFactor = (config.particleSize || 3) / 3;
-    ctx.lineWidth = (strokeWidth + 2) * sizeFactor;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    
-    const glowBlur = getGlowBlur(config);
-    
-    // Draw multiple gradient sweeps along the path
-    const sweepLength = 80 * sizeFactor;
-    const spacing = config.particleSpacing || 50;
-    const sweepSpacing = Math.max(sweepLength + 20, spacing * 2);
-    
-    let startDist = ((offset * 1.5) % sweepSpacing);
-    if (startDist < 0) startDist += sweepSpacing;
-    
-    while (startDist < totalLength + sweepLength) {
-      // Draw a gradient segment
-      const steps = Math.max(8, Math.round(20 * flowFrameBudget.sampleScale));
-      const stepLen = sweepLength / steps;
-      
-      for (let i = 0; i < steps; i++) {
-        const d1 = startDist + i * stepLen;
-        const d2 = startDist + (i + 1) * stepLen;
-        
-        if (d1 > totalLength || d2 < 0) continue;
-        
-        const clampD1 = Math.max(0, Math.min(d1, totalLength));
-        const clampD2 = Math.max(0, Math.min(d2, totalLength));
-        
-        const pt1 = getPointAtLength(geometry, clampD1);
-        const pt2 = getPointAtLength(geometry, clampD2);
-        
-        // Fade in at start, fade out at end of sweep
-        const t = i / steps;
-        const alpha = Math.sin(t * Math.PI) * 0.85;
-        
-        if (alpha <= 0.01) continue;
-        
-        ctx.globalAlpha = alpha;
-        ctx.strokeStyle = strokeColor;
-        if (glowBlur > 0) {
-          ctx.shadowColor = strokeColor;
-          ctx.shadowBlur = glowBlur * alpha;
-        }
-        
-        ctx.beginPath();
-        ctx.moveTo(pt1.x, pt1.y);
-        ctx.lineTo(pt2.x, pt2.y);
-        ctx.stroke();
-      }
-      
-      startDist += sweepSpacing;
-    }
-    
-    ctx.globalAlpha = 1;
-    ctx.restore();
-  }
-
-  function drawRippleWave(ctx, el, geometry, offset, config) {
-    const strokeColor = el.strokeColor || '#1e1e1e';
-    const strokeWidth = el.strokeWidth || 2;
-    const totalLength = geometry.totalLength;
-    if (totalLength === 0) return;
-    
-    ctx.save();
-    const sizeFactor = (config.particleSize || 3) / 3;
-    const glowBlur = getGlowBlur(config);
-    const spacing = config.particleSpacing || 50;
-    const maxRadius = (8 + strokeWidth * 2) * sizeFactor;
-    
-    // Place ripple centers along the path at intervals
-    let d = ((offset * 0.8) % spacing + spacing) % spacing;
-    while (d < totalLength) {
-      const pt = getPointAtLength(geometry, d);
-      
-      // Each ripple has 3 expanding rings
-      for (let ring = 0; ring < 3; ring++) {
-        const phase = ((offset * 0.06) + ring * 0.33) % 1;
-        const radius = phase * maxRadius;
-        const alpha = (1 - phase) * 0.6;
-        
-        if (alpha <= 0.02) continue;
-        
-        ctx.globalAlpha = alpha;
-        ctx.strokeStyle = strokeColor;
-        ctx.lineWidth = Math.max(1, (strokeWidth * 0.4) * sizeFactor * (1 - phase));
-        
-        if (glowBlur > 0) {
-          ctx.shadowColor = strokeColor;
-          ctx.shadowBlur = glowBlur * alpha;
-        }
-        
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      
-      d += spacing;
-    }
-    
-    ctx.globalAlpha = 1;
-    ctx.restore();
-  }
-
-  function drawPacketTrain(ctx, el, geometry, offset, config) {
-    const strokeColor = el.strokeColor || '#1e1e1e';
-    const strokeWidth = el.strokeWidth || 2;
-    const totalLength = geometry.totalLength;
-    if (totalLength === 0) return;
-    
-    ctx.save();
-    const sizeFactor = (config.particleSize || 3) / 3;
-    const glowBlur = getGlowBlur(config);
-    const spacing = config.particleSpacing || 50;
-    
-    ctx.fillStyle = strokeColor;
-    if (glowBlur > 0) {
-      ctx.shadowColor = strokeColor;
-      ctx.shadowBlur = glowBlur;
-    }
-    
-    const packetLen = 10 * sizeFactor;
-    const packetWidth = (strokeWidth + 2) * sizeFactor;
-    
-    let d = ((offset * 1.2) % spacing + spacing) % spacing;
-    while (d < totalLength) {
-      const pt = getPointAtLength(geometry, d);
-      const angle = Math.atan2(pt.dy, pt.dx);
-      
-      ctx.save();
-      ctx.translate(pt.x, pt.y);
-      ctx.rotate(angle);
-      
-      // Draw a chevron/arrow packet shape
-      ctx.beginPath();
-      ctx.moveTo(packetLen / 2, 0);
-      ctx.lineTo(-packetLen / 2, -packetWidth / 2);
-      ctx.lineTo(-packetLen / 4, 0);
-      ctx.lineTo(-packetLen / 2, packetWidth / 2);
-      ctx.closePath();
-      ctx.fill();
-      
-      ctx.restore();
-      
-      d += spacing;
-    }
-    
-    ctx.restore();
-  }
-
-  function drawSnakeTrail(ctx, el, geometry, offset, config) {
-    const strokeColor = el.strokeColor || '#1e1e1e';
-    const strokeWidth = el.strokeWidth || 2;
-    const totalLength = geometry.totalLength;
-    if (totalLength === 0) return;
-    
-    ctx.save();
-    const sizeFactor = (config.particleSize || 3) / 3;
-    const glowBlur = getGlowBlur(config);
-    const spacing = config.particleSpacing || 50;
-    
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    
-    // Draw tapered, fading trail segments
-    const trailLength = spacing * 1.5;
-    const trailSpacing = spacing * 2.5;
-    const steps = Math.max(12, Math.round(30 * flowFrameBudget.sampleScale));
-    const stepLen = trailLength / steps;
-    
-    let startDist = ((offset * 1.3) % trailSpacing + trailSpacing) % trailSpacing;
-    
-    while (startDist < totalLength + trailLength) {
-      for (let i = 0; i < steps - 1; i++) {
-        const d1 = startDist - i * stepLen;
-        const d2 = startDist - (i + 1) * stepLen;
-        
-        if (d1 < 0 || d2 > totalLength) continue;
-        
-        const clampD1 = Math.max(0, Math.min(d1, totalLength));
-        const clampD2 = Math.max(0, Math.min(d2, totalLength));
-        
-        const pt1 = getPointAtLength(geometry, clampD1);
-        const pt2 = getPointAtLength(geometry, clampD2);
-        
-        // Taper: head is thick, tail thins out
-        const taper = 1 - (i / steps);
-        const alpha = taper * 0.75;
-        const width = Math.max(1, (strokeWidth + 2) * sizeFactor * taper);
-        
-        if (alpha <= 0.02) continue;
-        
-        ctx.globalAlpha = alpha;
-        ctx.strokeStyle = strokeColor;
-        ctx.lineWidth = width;
-        
-        if (glowBlur > 0) {
-          ctx.shadowColor = strokeColor;
-          ctx.shadowBlur = glowBlur * taper;
-        }
-        
-        ctx.beginPath();
-        ctx.moveTo(pt1.x, pt1.y);
-        ctx.lineTo(pt2.x, pt2.y);
-        ctx.stroke();
-      }
-      
-      startDist += trailSpacing;
-    }
-    
-    ctx.globalAlpha = 1;
-    ctx.restore();
-  }
-
-  function drawComet(ctx, el, geometry, offset, config) {
-    const color = el.strokeColor || '#1e1e1e';
-    const strokeWidth = el.strokeWidth || 2;
-    const length = geometry.totalLength;
-    const size = (config.particleSize || 3) / 3;
-    const spacing = Math.max(70, (config.particleSpacing || 50) * 2.5);
-    const tailLength = Math.min(120 * size, spacing * 0.72);
-    const steps = Math.max(10, Math.round(24 * flowFrameBudget.sampleScale));
-    if (!length) return;
-
-    ctx.save();
-    ctx.strokeStyle = color;
-    ctx.fillStyle = color;
-    ctx.lineCap = 'round';
-    let headDistance = ((offset * 1.45) % spacing + spacing) % spacing;
-    while (headDistance < length + tailLength) {
-      for (let step = 0; step < steps; step++) {
-        const progress = step / steps;
-        const d1 = headDistance - progress * tailLength;
-        const d2 = headDistance - ((step + 1) / steps) * tailLength;
-        if (d1 < 0 || d2 > length) continue;
-        const from = getPointAtLength(geometry, Math.min(length, d1));
-        const to = getPointAtLength(geometry, Math.max(0, d2));
-        const strength = 1 - progress;
-        ctx.globalAlpha = strength * strength * 0.8;
-        ctx.lineWidth = Math.max(0.7, (strokeWidth + 3) * size * strength);
-        ctx.shadowColor = color;
-        ctx.shadowBlur = getGlowBlur(config) * strength;
-        ctx.beginPath();
-        ctx.moveTo(from.x, from.y);
-        ctx.lineTo(to.x, to.y);
-        ctx.stroke();
-      }
-      if (headDistance <= length) {
-        const head = getPointAtLength(geometry, headDistance);
-        ctx.globalAlpha = 1;
-        ctx.shadowBlur = getGlowBlur(config) * 1.8;
-        ctx.beginPath();
-        ctx.arc(head.x, head.y, Math.max(2, (strokeWidth + 1.5) * size), 0, Math.PI * 2);
-        ctx.fill();
-      }
-      headDistance += spacing;
-    }
-    ctx.restore();
-  }
-
-  function drawElectricity(ctx, el, geometry, offset, config) {
-    const color = el.strokeColor || '#1e1e1e';
-    const strokeWidth = el.strokeWidth || 2;
-    const length = geometry.totalLength;
-    const size = (config.particleSize || 3) / 3;
-    const spacing = Math.max(70, (config.particleSpacing || 50) * 2);
-    const boltLength = Math.min(100, spacing * 0.68);
-    if (!length) return;
-
-    ctx.save();
-    ctx.strokeStyle = color;
-    ctx.lineWidth = Math.max(1, strokeWidth * 0.8 * size);
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.shadowColor = color;
-    ctx.shadowBlur = getGlowBlur(config) * 1.4;
-    let start = ((offset * 1.8) % spacing + spacing) % spacing;
-    while (start < length) {
-      const end = Math.min(length, start + boltLength);
-      ctx.beginPath();
-      let index = 0;
-      for (let distance = start; distance <= end; distance += 7, index++) {
-        const point = getPointAtLength(geometry, distance);
-        const fade = Math.sin(Math.PI * (distance - start) / Math.max(1, end - start));
-        const jitter = Math.sin(index * 12.9898 + Math.floor(offset / 3) * 7.23) * 5 * size * fade;
-        const x = point.x - point.dy * jitter;
-        const y = point.y + point.dx * jitter;
-        if (index === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-      start += spacing;
-    }
-    ctx.restore();
-  }
-
-  function drawFlowWave(ctx, el, geometry, offset, config) {
-    const color = el.strokeColor || '#1e1e1e';
-    const strokeWidth = el.strokeWidth || 2;
-    const length = geometry.totalLength;
-    const size = (config.particleSize || 3) / 3;
-    const wavelength = Math.max(24, config.particleSpacing || 50);
-    const amplitude = (3 + strokeWidth * 1.5) * size;
-    const sampleDistance = flowFrameBudget.sampleScale < 1 ? 6 : 4;
-    if (!length) return;
-
-    ctx.save();
-    ctx.strokeStyle = color;
-    ctx.lineWidth = Math.max(1, strokeWidth * 0.75 * size);
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.shadowColor = color;
-    ctx.shadowBlur = getGlowBlur(config);
-    ctx.beginPath();
-    let index = 0;
-    for (let distance = 0; distance <= length; distance += sampleDistance, index++) {
-      const point = getPointAtLength(geometry, Math.min(distance, length));
-      const displacement = Math.sin((distance - offset * 1.5) * Math.PI * 2 / wavelength) * amplitude;
-      const x = point.x - point.dy * displacement;
-      const y = point.y + point.dx * displacement;
-      if (index === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  function drawDualFlow(ctx, el, geometry, offset, config) {
-    const color = el.strokeColor || '#1e1e1e';
-    const strokeWidth = el.strokeWidth || 2;
-    const length = geometry.totalLength;
-    const spacing = Math.max(24, config.particleSpacing || 50);
-    const size = (config.particleSize || 3) / 3;
-    const radius = Math.max(1.5, strokeWidth * 0.8 * size);
-    const phase = ((offset % spacing) + spacing) % spacing;
-    if (!length) return;
-
-    ctx.save();
-    ctx.fillStyle = color;
-    ctx.strokeStyle = color;
-    ctx.lineWidth = Math.max(1, radius * 0.6);
-    ctx.shadowColor = color;
-    ctx.shadowBlur = getGlowBlur(config);
-    for (let stream = 0; stream < 2; stream++) {
-      let distance = stream === 0 ? phase : (spacing - phase + spacing / 2) % spacing;
-      while (distance < length) {
-        const point = getPointAtLength(geometry, distance);
-        const laneOffset = radius * 1.5 * (stream === 0 ? 1 : -1);
-        ctx.beginPath();
-        ctx.arc(point.x - point.dy * laneOffset, point.y + point.dx * laneOffset, radius, 0, Math.PI * 2);
-        if (stream === 0) ctx.fill();
-        else ctx.stroke();
-        distance += spacing;
-      }
-    }
-    ctx.restore();
-  }
-
   // ═══════════════════════════════════════════════
   // IN-CANVAS FLOATING TOOLBAR
   // ═══════════════════════════════════════════════
 
   const ANIMATION_STYLES = [
-    { id: 'comet', label: 'Comet', icon: '&#9732;' },
-    { id: 'electricity', label: 'Electric', icon: '∿' },
-    { id: 'wave', label: 'Wave', icon: '&#8767;' },
-    { id: 'dual', label: 'Dual', icon: '&#8644;' },
     { id: 'particles', label: 'Particles', icon: '●' },
+    { id: 'comet', label: 'Comet', icon: '&#9732;' },
     { id: 'dashes', label: 'Ants', icon: '⋯' },
     { id: 'gradient', label: 'Pulse', icon: '◐' },
+    { id: 'wave', label: 'Wave', icon: '&#8767;' },
+    { id: 'dual', label: 'Dual', icon: '&#8644;' },
     { id: 'ripple', label: 'Ripple', icon: '◎' },
     { id: 'train', label: 'Packet', icon: '▸▸' },
-    { id: 'snake', label: 'Snake', icon: '∿' },
+  ];
+
+  // Excalidraw's own stroke quick picks, plus violet and cyan.
+  const FLOW_COLOR_SWATCHES = [
+    { value: '#1e1e1e', label: 'Black' },
+    { value: '#e03131', label: 'Red' },
+    { value: '#2f9e44', label: 'Green' },
+    { value: '#1971c2', label: 'Blue' },
+    { value: '#f08c00', label: 'Orange' },
+    { value: '#9c36b5', label: 'Violet' },
+    { value: '#0c8599', label: 'Cyan' }
   ];
 
   let panelOpen = false;
 
+  // Styles use Excalidraw's theme tokens, so the bar follows light/dark mode.
   function injectToolbarStyles() {
     if (document.getElementById('excaligif-toolbar-styles')) return;
 
@@ -1772,7 +1395,19 @@
     style.id = 'excaligif-toolbar-styles';
     style.textContent = `
       .excaligif-toolbar {
-        position: fixed;
+        --xt-bg: var(--island-bg-color, #ffffff);
+        --xt-text: var(--text-primary-color, #1b1b1f);
+        --xt-muted: color-mix(in srgb, var(--xt-text) 60%, transparent);
+        --xt-faint: color-mix(in srgb, var(--xt-text) 40%, transparent);
+        --xt-border: color-mix(in srgb, var(--xt-text) 11%, transparent);
+        --xt-surface: var(--color-surface-low, #ececf4);
+        --xt-hover: var(--button-hover-bg, #f1f0ff);
+        --xt-primary: var(--color-primary, #6965db);
+        --xt-primary-soft: color-mix(in srgb, var(--xt-primary) 16%, transparent);
+        --xt-danger: var(--color-danger, #db6965);
+        --xt-radius: var(--border-radius-lg, 0.5rem);
+        --xt-shadow: var(--shadow-island, 0 0 0 1px rgba(0, 0, 0, 0.08), 0 7px 14px rgba(0, 0, 0, 0.1));
+        position: absolute;
         bottom: 24px;
         left: 50%;
         transform: translateX(-50%);
@@ -1780,262 +1415,334 @@
         display: none;
         flex-direction: column;
         align-items: center;
-        gap: 6px;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        gap: 8px;
+        max-width: calc(100% - 24px);
+        font-family: var(--ui-font, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+        color: var(--xt-text);
         user-select: none;
+      }
+      body > .excaligif-toolbar { position: fixed; }
+      .excaligif-toolbar * { box-sizing: border-box; }
+      .excaligif-toolbar button {
+        font: inherit;
+        color: inherit;
+      }
+      .excaligif-toolbar :focus-visible {
+        outline: 2px solid var(--xt-primary);
+        outline-offset: 1px;
       }
       .excaligif-toolbar.visible {
         display: flex;
-        animation: excaligif-fadeIn 0.2s ease-out;
+        animation: excaligif-fadeIn 0.16s ease-out;
       }
       @keyframes excaligif-fadeIn {
-        from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+        from { opacity: 0; transform: translateX(-50%) translateY(6px); }
         to { opacity: 1; transform: translateX(-50%) translateY(0); }
       }
-      
-      /* Settings Panel above main toolbar */
+      @media (prefers-reduced-motion: reduce) {
+        .excaligif-toolbar.visible,
+        .excaligif-toolbar-panel { animation: none; }
+      }
+
+      /* Tuning panel above the bar */
       .excaligif-toolbar-panel {
         display: none;
         flex-direction: column;
-        gap: 8px;
-        background: rgba(18, 18, 26, 0.96);
-        backdrop-filter: blur(16px);
-        -webkit-backdrop-filter: blur(16px);
-        border: 1px solid rgba(140, 90, 220, 0.25);
-        border-radius: 14px;
-        padding: 12px 14px;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.45);
-        animation: excaligif-slideUp 0.2s ease-out;
-        width: 250px;
+        gap: 10px;
+        width: 340px;
+        max-width: 100%;
+        padding: 12px;
+        background: var(--xt-bg);
+        border-radius: calc(var(--xt-radius) * 1.5);
+        box-shadow: var(--xt-shadow);
+        animation: excaligif-slideUp 0.16s ease-out;
       }
-      .excaligif-toolbar-panel.visible {
-        display: flex;
-      }
+      .excaligif-toolbar-panel.visible { display: flex; }
       @keyframes excaligif-slideUp {
-        from { opacity: 0; transform: translateY(8px); }
+        from { opacity: 0; transform: translateY(6px); }
         to { opacity: 1; transform: translateY(0); }
       }
-      
       .excaligif-panel-row {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 12px;
+        gap: 10px;
       }
       .excaligif-panel-row > span {
-        font-size: 10px;
-        color: rgba(255,255,255,0.45);
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        width: 65px;
-      }
-      
-      /* Pill Button Selectors */
-      .excaligif-pill-group {
-        display: flex;
-        background: rgba(255,255,255,0.05);
-        border: 1px solid rgba(255,255,255,0.06);
-        border-radius: 8px;
-        padding: 2px;
-        flex: 1;
-        justify-content: space-between;
-      }
-      .excaligif-pill-group button {
-        background: none;
-        border: none;
-        color: rgba(255,255,255,0.5);
-        font-family: inherit;
-        font-size: 10px;
+        width: 56px;
+        flex-shrink: 0;
+        color: var(--xt-muted);
+        font-size: 11px;
         font-weight: 600;
-        padding: 4px 6px;
-        cursor: pointer;
-        border-radius: 6px;
-        transition: all 0.15s ease;
-        outline: none;
+      }
+
+      /* Colour swatches */
+      .excaligif-swatches {
+        display: flex;
         flex: 1;
-        text-align: center;
+        flex-wrap: wrap;
+        gap: 4px;
       }
-      .excaligif-pill-group button:hover {
-        color: rgba(255,255,255,0.85);
+      .excaligif-swatch {
+        position: relative;
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        border: none;
+        border-radius: 6px;
+        background: transparent;
+        cursor: pointer;
       }
-      .excaligif-pill-group button.active {
-        background: rgba(140, 90, 220, 0.25);
-        border: 1px solid rgba(140, 90, 220, 0.4);
-        color: hsl(270, 75%, 70%);
+      .excaligif-swatch::before {
+        content: "";
+        position: absolute;
+        inset: 2px;
+        border-radius: 4px;
+        background: var(--swatch-color, transparent);
+        box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+        /* Show colours the way the canvas renders them (inverted in dark mode). */
+        filter: var(--theme-filter, none);
       }
-      
-      /* Range Inputs */
-      .excaligif-range-group {
+      .excaligif-swatch:hover::before { inset: 1px; }
+      .excaligif-swatch.active { box-shadow: 0 0 0 2px var(--xt-primary); }
+      .excaligif-swatch.is-auto::after {
+        content: "A";
+        position: absolute;
+        inset: 0;
         display: flex;
         align-items: center;
-        gap: 8px;
+        justify-content: center;
+        color: #ffffff;
+        font-size: 10px;
+        font-weight: 800;
+        text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
+      }
+      .excaligif-swatch-sep {
+        width: 1px;
+        align-self: stretch;
+        margin: 2px 1px;
+        background: var(--xt-border);
+      }
+      .excaligif-swatch.is-custom::before {
+        background: conic-gradient(#e03131, #f08c00, #ffd43b, #2f9e44, #1971c2, #9c36b5, #e03131);
+        filter: none;
+      }
+      .excaligif-swatch.is-custom.active::before {
+        background: var(--swatch-color);
+        filter: var(--theme-filter, none);
+      }
+      .excaligif-swatch input[type="color"] {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        opacity: 0;
+        cursor: pointer;
+        border: none;
+        padding: 0;
+      }
+
+      /* Pill selectors */
+      .excaligif-pill-group {
+        display: flex;
         flex: 1;
+        gap: 2px;
+        padding: 2px;
+        border-radius: var(--xt-radius);
+        background: var(--xt-surface);
+      }
+      .excaligif-pill-group button {
+        flex: 1;
+        height: 24px;
+        padding: 0 6px;
+        border: none;
+        border-radius: calc(var(--xt-radius) - 2px);
+        background: transparent;
+        color: var(--xt-muted);
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background-color 0.12s ease, color 0.12s ease;
+      }
+      .excaligif-pill-group button:hover { color: var(--xt-text); }
+      .excaligif-pill-group button.active {
+        background: var(--xt-bg);
+        color: var(--xt-primary);
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+      }
+
+      /* Sliders */
+      .excaligif-range-group {
+        display: flex;
+        flex: 1;
+        align-items: center;
+        gap: 8px;
       }
       .excaligif-range-group input[type="range"] {
-        -webkit-appearance: none;
-        appearance: none;
         flex: 1;
-        height: 3px;
-        background: rgba(255,255,255,0.1);
-        border-radius: 3px;
-        outline: none;
+        margin: 0;
+        accent-color: var(--xt-primary);
         cursor: pointer;
-      }
-      .excaligif-range-group input[type="range"]::-webkit-slider-thumb {
-        -webkit-appearance: none;
-        appearance: none;
-        width: 10px;
-        height: 10px;
-        background: hsl(270, 75%, 64%);
-        border-radius: 50%;
-        cursor: pointer;
-        box-shadow: 0 0 6px hsla(270, 75%, 64%, 0.5);
       }
       .excaligif-range-group span {
-        font-size: 10px;
+        min-width: 34px;
+        color: var(--xt-muted);
+        font-size: 11px;
         font-weight: 600;
-        color: hsl(270, 75%, 70%);
-        min-width: 20px;
+        font-variant-numeric: tabular-nums;
         text-align: right;
       }
-      
-      /* Main Toolbar Bar */
+
+      /* Main bar */
       .excaligif-toolbar-main {
         display: flex;
         align-items: center;
-        gap: 3px;
-        max-width: calc(100vw - 24px);
+        gap: 2px;
+        max-width: 100%;
+        padding: 4px;
         overflow-x: auto;
         scrollbar-width: none;
-        background: rgba(18, 18, 26, 0.92);
-        backdrop-filter: blur(16px);
-        -webkit-backdrop-filter: blur(16px);
-        border: 1px solid rgba(140, 90, 220, 0.25);
-        border-radius: 14px;
-        padding: 5px 8px;
-        box-shadow: 0 4px 24px rgba(0,0,0,0.45), 0 0 16px rgba(140, 90, 220, 0.08);
+        background: var(--xt-bg);
+        border-radius: var(--xt-radius);
+        box-shadow: var(--xt-shadow);
       }
-      .excaligif-toolbar-main::-webkit-scrollbar {
-        display: none;
-      }
+      .excaligif-toolbar-main::-webkit-scrollbar { display: none; }
       .excaligif-toolbar-label {
+        padding: 0 6px 0 8px;
+        color: var(--xt-muted);
         font-size: 11px;
         font-weight: 700;
-        color: rgba(255,255,255,0.92);
-        padding: 0 6px 0 4px;
-        letter-spacing: -0.3px;
         white-space: nowrap;
       }
-      .excaligif-toolbar-label span {
-        color: hsl(270, 75%, 64%);
-        text-shadow: 0 0 8px hsla(270, 75%, 64%, 0.3);
-      }
+      .excaligif-toolbar-label span { color: var(--xt-primary); }
       .excaligif-toolbar-divider {
         width: 1px;
         height: 20px;
-        background: rgba(255,255,255,0.1);
-        margin: 0 3px;
+        margin: 0 4px;
+        flex-shrink: 0;
+        background: var(--xt-border);
       }
       .excaligif-toolbar-btn {
         display: flex;
         flex-shrink: 0;
         align-items: center;
-        gap: 4px;
-        padding: 5px 10px;
-        border: 1px solid rgba(255,255,255,0.06);
-        border-radius: 10px;
-        background: rgba(255,255,255,0.04);
-        color: rgba(255,255,255,0.6);
-        font-family: inherit;
-        font-size: 11px;
+        gap: 5px;
+        height: 32px;
+        padding: 0 10px;
+        border: none;
+        border-radius: calc(var(--xt-radius) - 1px);
+        background: transparent;
+        font-size: 12px;
         font-weight: 500;
-        cursor: pointer;
-        transition: all 0.18s ease;
         white-space: nowrap;
-        outline: none;
+        cursor: pointer;
+        transition: background-color 0.12s ease, color 0.12s ease;
       }
-      .excaligif-toolbar-btn:hover {
-        background: rgba(140, 90, 220, 0.15);
-        border-color: rgba(140, 90, 220, 0.3);
-        color: rgba(255,255,255,0.9);
-      }
+      .excaligif-toolbar-btn:hover { background: var(--xt-hover); }
       .excaligif-toolbar-btn.active {
-        background: hsl(270, 75%, 64%);
-        border-color: hsl(270, 75%, 64%);
-        color: #fff;
-        box-shadow: 0 0 12px hsla(270, 75%, 64%, 0.35);
+        background: var(--xt-primary-soft);
+        color: var(--xt-primary);
         font-weight: 600;
       }
-      .excaligif-toolbar-btn.active:hover {
-        background: hsl(270, 75%, 58%);
-      }
-      .excaligif-toolbar-btn.gear {
-        padding: 5px 8px;
-        font-size: 12px;
-      }
-      .excaligif-toolbar-btn.gear.active {
-        background: rgba(140, 90, 220, 0.2);
-        border-color: rgba(140, 90, 220, 0.4);
-        color: hsl(270, 75%, 70%);
-      }
-      .excaligif-toolbar-btn.remove {
-        color: rgba(255,255,255,0.35);
-        padding: 5px 8px;
-        margin-left: 1px;
-      }
-      .excaligif-toolbar-btn.remove:hover {
-        background: rgba(220, 60, 60, 0.2);
-        border-color: rgba(220, 60, 60, 0.35);
-        color: hsl(0, 80%, 65%);
-      }
       .excaligif-toolbar-icon {
-        font-size: 12px;
+        width: 14px;
+        font-size: 13px;
         line-height: 1;
+        text-align: center;
+      }
+      .excaligif-toolbar-btn.icon-only {
+        width: 32px;
+        padding: 0;
+        justify-content: center;
+      }
+      .excaligif-toolbar-btn.icon-only iconify-icon {
+        display: inline-flex;
+        font-size: 17px;
+      }
+      .excaligif-toolbar-btn.color-btn .excaligif-color-dot {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: var(--swatch-color, currentColor);
+        box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+        filter: var(--theme-filter, none);
+      }
+      .excaligif-toolbar-btn.remove { color: var(--xt-muted); }
+      .excaligif-toolbar-btn.remove:hover {
+        background: color-mix(in srgb, var(--xt-danger) 14%, transparent);
+        color: var(--xt-danger);
       }
     `;
     document.head.appendChild(style);
   }
 
+  function mountToolbar() {
+    if (!toolbarElement) return;
+    const container = document.querySelector('.excalidraw') || document.body;
+    if (toolbarElement.parentElement !== container) container.appendChild(toolbarElement);
+  }
+
+  function createIconButton(className, icon, title, onClick) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `excaligif-toolbar-btn icon-only ${className}`;
+    button.title = title;
+    button.setAttribute('aria-label', title);
+    button.innerHTML = `<iconify-icon icon="${icon}" aria-hidden="true"></iconify-icon>`;
+    button.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      onClick();
+    });
+    return button;
+  }
+
+  function togglePanel() {
+    panelOpen = !panelOpen;
+    updateToolbarPanelVisibility();
+  }
+
   function createToolbar() {
-    if (toolbarElement) return;
+    if (toolbarElement && toolbarElement.isConnected) {
+      mountToolbar();
+      return;
+    }
+    if (toolbarElement) toolbarElement.remove();
     injectToolbarStyles();
 
     const toolbar = document.createElement('div');
     toolbar.className = 'excaligif-toolbar';
     toolbar.id = 'excaligif-toolbar';
+    toolbar.setAttribute('role', 'toolbar');
+    toolbar.setAttribute('aria-label', 'Line and arrow motion');
 
     // 1. Settings Panel
     const panel = document.createElement('div');
     panel.className = 'excaligif-toolbar-panel';
     panel.id = 'excaligif-toolbar-panel';
 
-    // Speed Row
+    panel.appendChild(createColorRow());
+
     panel.appendChild(createPillRow('Speed', 'speed', [
       { val: 'slow', label: 'Slow' },
-      { val: 'medium', label: 'Med' },
+      { val: 'medium', label: 'Medium' },
       { val: 'fast', label: 'Fast' }
     ]));
 
-    // Direction Row
     panel.appendChild(createPillRow('Direction', 'direction', [
       { val: 'forward', label: 'Forward' },
       { val: 'reverse', label: 'Reverse' },
       { val: 'bounce', label: 'Bounce' }
     ]));
 
-    // Glow Row
     panel.appendChild(createPillRow('Glow', 'glowIntensity', [
       { val: 'none', label: 'None' },
       { val: 'subtle', label: 'Subtle' },
-      { val: 'medium', label: 'Med' },
+      { val: 'medium', label: 'Medium' },
       { val: 'strong', label: 'Strong' }
     ]));
 
-    // Size Slider Row
     panel.appendChild(createSliderRow('Size', 'excaligif-size-input', 'excaligif-size-val', 1, 5, 3, 1, 'particleSize'));
-
-    // Spacing Slider Row
     panel.appendChild(createSliderRow('Spacing', 'excaligif-spacing-input', 'excaligif-spacing-val', 20, 120, 50, 5, 'particleSpacing'));
 
     toolbar.appendChild(panel);
@@ -2044,23 +1751,21 @@
     const mainBar = document.createElement('div');
     mainBar.className = 'excaligif-toolbar-main';
 
-    // Logo label
     const label = document.createElement('div');
     label.className = 'excaligif-toolbar-label';
     label.innerHTML = 'Excali<span>Up</span>';
     mainBar.appendChild(label);
 
-    // Divider
     const div1 = document.createElement('div');
     div1.className = 'excaligif-toolbar-divider';
     mainBar.appendChild(div1);
 
-    // Style buttons
     for (const animStyle of ANIMATION_STYLES) {
       const btn = document.createElement('button');
+      btn.type = 'button';
       btn.className = 'excaligif-toolbar-btn';
       btn.dataset.style = animStyle.id;
-      btn.innerHTML = '<span class="excaligif-toolbar-icon">' + animStyle.icon + '</span>' + animStyle.label;
+      btn.innerHTML = '<span class="excaligif-toolbar-icon" aria-hidden="true">' + animStyle.icon + '</span>' + animStyle.label;
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         e.preventDefault();
@@ -2069,58 +1774,108 @@
       mainBar.appendChild(btn);
     }
 
-    // Divider
     const div2 = document.createElement('div');
     div2.className = 'excaligif-toolbar-divider';
     mainBar.appendChild(div2);
 
-    // Gear button for tuning panel
-    const gearBtn = document.createElement('button');
-    gearBtn.className = 'excaligif-toolbar-btn gear';
-    gearBtn.id = 'excaligif-gear-btn';
-    gearBtn.textContent = '⚙️';
-    gearBtn.title = 'Tune Animation';
-    gearBtn.addEventListener('click', (e) => {
+    // Effect colour: shows the current colour and opens the tuning panel.
+    const colorBtn = document.createElement('button');
+    colorBtn.type = 'button';
+    colorBtn.className = 'excaligif-toolbar-btn icon-only color-btn';
+    colorBtn.id = 'excaligif-color-btn';
+    colorBtn.title = 'Effect color';
+    colorBtn.setAttribute('aria-label', 'Effect color');
+    colorBtn.innerHTML = '<span class="excaligif-color-dot" aria-hidden="true"></span>';
+    colorBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       e.preventDefault();
-      panelOpen = !panelOpen;
-      updateToolbarPanelVisibility();
+      togglePanel();
     });
+    mainBar.appendChild(colorBtn);
+
+    const gearBtn = createIconButton('gear', 'lucide:sliders-horizontal', 'Tune animation', togglePanel);
+    gearBtn.id = 'excaligif-gear-btn';
     mainBar.appendChild(gearBtn);
 
-    // Remove button
-    const removeBtn = document.createElement('button');
-    removeBtn.className = 'excaligif-toolbar-btn remove';
+    const removeBtn = createIconButton('remove', 'lucide:x', 'Remove animation', onRemoveClick);
     removeBtn.dataset.style = 'remove';
-    removeBtn.textContent = '✕';
-    removeBtn.title = 'Remove animation';
-    removeBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      e.preventDefault();
-      onRemoveClick();
-    });
     mainBar.appendChild(removeBtn);
 
     toolbar.appendChild(mainBar);
 
-    document.body.appendChild(toolbar);
     toolbarElement = toolbar;
+    mountToolbar();
+  }
+
+  function createColorRow() {
+    const row = document.createElement('div');
+    row.className = 'excaligif-panel-row';
+
+    const span = document.createElement('span');
+    span.textContent = 'Color';
+    row.appendChild(span);
+
+    const group = document.createElement('div');
+    group.className = 'excaligif-swatches';
+    group.id = 'excaligif-color-swatches';
+    group.setAttribute('role', 'group');
+    group.setAttribute('aria-label', 'Effect color');
+
+    const addSwatch = (value, labelText, extraClass = '') => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `excaligif-swatch ${extraClass}`.trim();
+      btn.dataset.color = value;
+      btn.title = labelText;
+      btn.setAttribute('aria-label', labelText);
+      if (value !== 'auto') btn.style.setProperty('--swatch-color', value);
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        updateElementSetting('color', value === 'auto' ? null : value);
+      });
+      group.appendChild(btn);
+      return btn;
+    };
+
+    addSwatch('auto', 'Match the line color', 'is-auto');
+    const separator = document.createElement('span');
+    separator.className = 'excaligif-swatch-sep';
+    group.appendChild(separator);
+    for (const swatch of FLOW_COLOR_SWATCHES) addSwatch(swatch.value, swatch.label);
+
+    // Custom colour: a native picker hidden inside a rainbow swatch.
+    const custom = document.createElement('label');
+    custom.className = 'excaligif-swatch is-custom';
+    custom.title = 'Custom color';
+    const picker = document.createElement('input');
+    picker.type = 'color';
+    picker.id = 'excaligif-color-picker';
+    picker.setAttribute('aria-label', 'Custom color');
+    picker.addEventListener('input', (e) => updateElementSetting('color', e.target.value, false));
+    picker.addEventListener('change', (e) => updateElementSetting('color', e.target.value));
+    custom.appendChild(picker);
+    group.appendChild(custom);
+
+    row.appendChild(group);
+    return row;
   }
 
   function createPillRow(labelName, settingKey, options) {
     const row = document.createElement('div');
     row.className = 'excaligif-panel-row';
-    
+
     const span = document.createElement('span');
     span.textContent = labelName;
     row.appendChild(span);
-    
+
     const group = document.createElement('div');
     group.className = 'excaligif-pill-group';
     group.dataset.setting = settingKey;
-    
+
     options.forEach(opt => {
       const btn = document.createElement('button');
+      btn.type = 'button';
       btn.dataset.val = opt.val;
       btn.textContent = opt.label;
       btn.addEventListener('click', (e) => {
@@ -2130,7 +1885,7 @@
       });
       group.appendChild(btn);
     });
-    
+
     row.appendChild(group);
     return row;
   }
@@ -2138,14 +1893,14 @@
   function createSliderRow(labelName, inputId, valId, min, max, val, step, settingKey) {
     const row = document.createElement('div');
     row.className = 'excaligif-panel-row';
-    
+
     const span = document.createElement('span');
     span.textContent = labelName;
     row.appendChild(span);
-    
+
     const group = document.createElement('div');
     group.className = 'excaligif-range-group';
-    
+
     const input = document.createElement('input');
     input.type = 'range';
     input.id = inputId;
@@ -2153,20 +1908,66 @@
     input.max = max;
     input.value = val;
     input.step = step;
-    
+    input.setAttribute('aria-label', labelName);
+
     const valSpan = document.createElement('span');
     valSpan.id = valId;
     valSpan.textContent = val;
-    
+
     input.addEventListener('input', (e) => {
       valSpan.textContent = e.target.value;
       updateElementSetting(settingKey, parseInt(e.target.value, 10), false);
     });
-    
+    input.addEventListener('change', (e) => {
+      updateElementSetting(settingKey, parseInt(e.target.value, 10));
+    });
+
     group.appendChild(input);
     group.appendChild(valSpan);
     row.appendChild(group);
     return row;
+  }
+
+  // Reflects the selection's effect colour in the swatches and the bar button.
+  function updateColorControls(elements, allAnimated) {
+    const colorBtn = document.getElementById('excaligif-color-btn');
+    if (colorBtn) colorBtn.style.display = allAnimated ? '' : 'none';
+    if (!allAnimated) return;
+
+    const colors = elements.map((element) => getElementConfig(element.id).color);
+    const common = colors.every((color) => color === colors[0]) ? colors[0] : undefined;
+    const strokeColor = elements[0].strokeColor || '#1e1e1e';
+    const shown = common === undefined ? null : common || strokeColor;
+
+    if (colorBtn) {
+      colorBtn.style.setProperty('--swatch-color', shown || 'transparent');
+      colorBtn.title = common === undefined
+        ? 'Effect color (mixed)'
+        : common ? `Effect color ${common}` : 'Effect color (matches the line)';
+    }
+
+    const swatches = document.getElementById('excaligif-color-swatches');
+    if (!swatches) return;
+    const auto = swatches.querySelector('.is-auto');
+    if (auto) {
+      auto.style.setProperty('--swatch-color', strokeColor);
+      auto.classList.toggle('active', common === null);
+    }
+    let matchedPreset = common === null || common === undefined;
+    for (const swatch of swatches.querySelectorAll('.excaligif-swatch[data-color]:not(.is-auto)')) {
+      const isActive = swatch.dataset.color === common;
+      swatch.classList.toggle('active', isActive);
+      if (isActive) matchedPreset = true;
+    }
+    const custom = swatches.querySelector('.is-custom');
+    const picker = document.getElementById('excaligif-color-picker');
+    if (custom) {
+      custom.classList.toggle('active', !matchedPreset);
+      if (!matchedPreset) custom.style.setProperty('--swatch-color', common);
+    }
+    if (picker && document.activeElement !== picker) {
+      picker.value = /^#[0-9a-f]{6}$/i.test(common || '') ? common : (/^#[0-9a-f]{6}$/i.test(strokeColor) ? strokeColor : '#1e1e1e');
+    }
   }
 
   function updateElementSetting(key, val, persistImmediately = true) {
@@ -2190,7 +1991,7 @@
       toolbarRenderSignature = '';
       updateToolbar(true);
     } else {
-      toolbarRenderSignature = `${getSelectionKey(elements)}:${animatedElementsRevision}:${panelOpen}`;
+      toolbarRenderSignature = getToolbarSignature(elements);
     }
     reconcileFlowRuntime();
   }
@@ -2200,17 +2001,13 @@
     const panel = document.getElementById('excaligif-toolbar-panel');
     const gearBtn = document.getElementById('excaligif-gear-btn');
     if (!panel || !gearBtn) return;
-    
+
     const elements = getSelectedAnimatableElements();
     const allAnimated = elements.length > 0 && elements.every((element) => animatedElements.has(element.id));
-    
-    if (panelOpen && allAnimated) {
-      panel.classList.add('visible');
-      gearBtn.classList.add('active');
-    } else {
-      panel.classList.remove('visible');
-      gearBtn.classList.remove('active');
-    }
+    const isOpen = panelOpen && allAnimated;
+    panel.classList.toggle('visible', isOpen);
+    gearBtn.classList.toggle('active', isOpen);
+    gearBtn.setAttribute('aria-expanded', String(isOpen));
   }
 
   function getSelectedAnimatableElements() {
@@ -2225,6 +2022,12 @@
     return ids
       .map((id) => elementsMap.get(id))
       .filter(isAnimatableElement);
+  }
+
+  function getToolbarSignature(elements) {
+    // Stroke colours are included so the "match line" swatch stays current.
+    const strokes = elements.map((element) => element.strokeColor).join(',');
+    return `${getSelectionKey(elements)}:${animatedElementsRevision}:${panelOpen}:${strokes}`;
   }
 
   function getSelectionKey(elements) {
@@ -2243,12 +2046,13 @@
 
   function updateToolbar(force = false) {
     if (!toolbarElement) return;
+    mountToolbar();
 
     const elements = getSelectedAnimatableElements();
     if (elements.length > 0) syncAnimatedElementsFromScene(elements);
     const selectionKey = getSelectionKey(elements);
     const signature = elements.length > 0 && currentSettings.flowEnabled
-      ? `${selectionKey}:${animatedElementsRevision}:${panelOpen}`
+      ? getToolbarSignature(elements)
       : `hidden:${currentSettings.flowEnabled}`;
     if (!force && signature === toolbarRenderSignature) return;
     toolbarRenderSignature = signature;
@@ -2273,18 +2077,21 @@
     const allAnimated = elements.every((element) => animatedElements.has(element.id));
     const activeStyle = allAnimated ? getCommonSetting(elements, 'style') : null;
 
-    const buttons = toolbarElement.querySelectorAll('.excaligif-toolbar-main .excaligif-toolbar-btn:not(.remove):not(.gear)');
+    const buttons = toolbarElement.querySelectorAll('.excaligif-toolbar-main .excaligif-toolbar-btn[data-style]:not(.remove)');
     for (const btn of buttons) {
-      btn.classList.toggle('active', btn.dataset.style === activeStyle);
+      const isActive = btn.dataset.style === activeStyle;
+      btn.classList.toggle('active', isActive);
+      btn.setAttribute('aria-pressed', String(isActive));
     }
 
     const gearBtn = document.getElementById('excaligif-gear-btn');
     if (gearBtn) {
-      gearBtn.style.display = allAnimated ? 'inline-block' : 'none';
+      gearBtn.style.display = allAnimated ? '' : 'none';
       if (!allAnimated) {
         panelOpen = false;
       }
     }
+    updateColorControls(elements, allAnimated);
 
     // Populate Settings Panel inputs
     if (allAnimated) {
@@ -2385,41 +2192,17 @@
   // Poll for Excalidraw instance
   setInterval(checkInstance, 1000);
 
-  // Fast poll for element selection and vault scene changes
+  // Fast poll for element selection and UI mounting. Vault saves are driven
+  // by Excalidraw's onChange subscription (see attachVaultChangeListener).
   setInterval(() => {
     if (currentApp && !document.hidden) {
       updateToolbar();
       updateSidebarTheme();
       mountVaultButton();
-      if (rootVaultHandle && vaultSyncState !== 'unlinked' && vaultSyncState !== 'permission-required') {
-        const elements = currentApp.api ? currentApp.api.getSceneElements() : [];
-        const appState = currentApp.state || {};
-        const files = (currentApp.api && currentApp.api.getFiles && currentApp.api.getFiles()) || currentApp.files || {};
-        const currentHash = getSceneHash(elements, appState, files);
-        if (currentHash !== lastSavedSceneHash) {
-          scheduleVaultAutoSave();
-        }
-      }
     }
   }, 250);
 
-  window.addEventListener('beforeunload', () => {
-    if (autoSaveTimer && rootVaultHandle) {
-      scheduleVaultAutoSave(true);
-    }
-  });
-
-  window.addEventListener('pointerup', () => {
-    if (rootVaultHandle && vaultSyncState !== 'unlinked') {
-      scheduleVaultAutoSave();
-    }
-  });
-
-  window.addEventListener('keyup', () => {
-    if (rootVaultHandle && vaultSyncState !== 'unlinked') {
-      scheduleVaultAutoSave();
-    }
-  });
+  window.addEventListener('beforeunload', flushVaultOnExit);
 
   // Listen for Toggle Event from Content Script
   document.addEventListener('ExcaliGifToggleState', (e) => {
@@ -2479,6 +2262,7 @@
         if (player.isPlaying) player.stop();
       }
       if (saveAnimatedElementsTimer) saveAnimatedElements(true);
+      flushVaultOnExit();
       return;
     }
 
@@ -2721,6 +2505,60 @@
       .excaligif-icons-filter option {
         background: #24242b;
         color: #fff;
+      }
+
+      .excaligif-icons-insert {
+        display: grid;
+        grid-template-columns: 1.3fr 1fr;
+        gap: 8px;
+      }
+      .excaligif-icons-segmented.is-compact button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        font-size: 11px;
+        padding: 4px 6px;
+        border: 1px solid transparent;
+      }
+      .excaligif-color-swatch {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--excaligif-stroke, currentColor);
+        box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.45);
+        flex-shrink: 0;
+      }
+      .excaligif-icons-sidebar.theme--dark .excaligif-color-swatch {
+        filter: invert(93%) hue-rotate(180deg);
+      }
+      .excaligif-icons-sidebar.is-tinted .excaligif-icon-card .excaligif-icon-glyph,
+      .excaligif-icons-sidebar.is-tinted .excaligif-icon-card:hover .excaligif-icon-glyph {
+        /* Beats the theme-specific glyph colours defined further down. */
+        color: var(--excaligif-stroke) !important;
+      }
+      /* Match the canvas, which renders strokes inverted in dark mode. */
+      .excaligif-icons-sidebar.theme--dark.is-tinted .excaligif-icon-card .excaligif-icon-glyph {
+        filter: invert(93%) hue-rotate(180deg);
+      }
+      .excaligif-icon-card.is-loading {
+        pointer-events: none;
+      }
+      .excaligif-icon-card.is-loading .excaligif-icon-glyph {
+        opacity: 0.2;
+      }
+      .excaligif-icon-card.is-loading::after {
+        content: "";
+        position: absolute;
+        top: 22px;
+        left: 50%;
+        width: 16px;
+        height: 16px;
+        margin-left: -8px;
+        border: 2px solid rgba(128, 128, 128, 0.3);
+        border-top-color: currentColor;
+        border-radius: 50%;
+        animation: excaligif-spin 0.6s linear infinite;
       }
 
       .excaligif-icons-segmented {
@@ -3260,706 +3098,838 @@
       .excaligif-icons-sidebar.theme--light .excaligif-page-info {
         color: rgba(0, 0, 0, 0.55);
       }
+    `;
+    document.head.appendChild(style);
+  }
 
-      /* --- Local Vault Status Button --- */
+  // Vault styles are built on Excalidraw's own theme tokens, so the drawer,
+  // menus and dialogs follow light/dark mode without extra overrides.
+  function injectVaultStyles() {
+    if (document.getElementById('excaliup-vault-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'excaliup-vault-styles';
+    style.textContent = `
+      .excaliup-vault-btn,
+      .excaliup-vault-drawer,
+      .excaliup-vault-popover,
+      .excaliup-vault-modal-overlay {
+        --xv-bg: var(--island-bg-color, #ffffff);
+        --xv-text: var(--text-primary-color, #1b1b1f);
+        --xv-muted: color-mix(in srgb, var(--xv-text) 58%, transparent);
+        --xv-faint: color-mix(in srgb, var(--xv-text) 38%, transparent);
+        --xv-border: color-mix(in srgb, var(--xv-text) 11%, transparent);
+        --xv-surface: var(--color-surface-low, #ececf4);
+        --xv-surface-soft: color-mix(in srgb, var(--xv-surface) 55%, transparent);
+        --xv-hover: var(--button-hover-bg, #f1f0ff);
+        --xv-primary: var(--color-primary, #6965db);
+        --xv-primary-strong: var(--color-primary-darker, #5b57d1);
+        --xv-primary-soft: color-mix(in srgb, var(--xv-primary) 14%, transparent);
+        --xv-danger: var(--color-danger, #db6965);
+        /* Text on primary/danger fills: white in light mode, near-black in dark. */
+        --xv-on-primary: var(--color-surface-lowest, #ffffff);
+        --xv-ok: #2f9e44;
+        --xv-warn: #e8590c;
+        --xv-radius: var(--border-radius-lg, 0.5rem);
+        --xv-shadow: var(--shadow-island, 0 0 0 1px rgba(0, 0, 0, 0.08), 0 7px 14px rgba(0, 0, 0, 0.1));
+        font-family: var(--ui-font, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+        color: var(--xv-text);
+      }
+      .excaliup-vault-btn *,
+      .excaliup-vault-drawer *,
+      .excaliup-vault-popover *,
+      .excaliup-vault-modal-overlay * {
+        box-sizing: border-box;
+      }
+      .excaliup-vault-drawer button,
+      .excaliup-vault-popover button,
+      .excaliup-vault-modal-overlay button {
+        font: inherit;
+        color: inherit;
+      }
+      .excaliup-vault-drawer :focus-visible,
+      .excaliup-vault-popover :focus-visible,
+      .excaliup-vault-modal-overlay :focus-visible,
+      .excaliup-vault-btn:focus-visible {
+        outline: 2px solid var(--xv-primary);
+        outline-offset: 1px;
+      }
+      .excaliup-vault-drawer iconify-icon,
+      .excaliup-vault-popover iconify-icon,
+      .excaliup-vault-modal-overlay iconify-icon,
+      .excaliup-vault-btn iconify-icon {
+        display: inline-flex;
+        flex-shrink: 0;
+      }
+      .excaliup-vault-drawer kbd,
+      .excaliup-vault-popover kbd {
+        font: inherit;
+        font-size: 10px;
+        padding: 1px 4px;
+        border-radius: 4px;
+        border: 1px solid var(--xv-border);
+        background: var(--xv-surface-soft);
+        color: var(--xv-muted);
+      }
+
+      /* Status dot shared by the launcher and the drawer */
+      .excaliup-vault-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        background: var(--xv-faint);
+      }
+      .excaliup-vault-dot[data-tone="ok"] { background: var(--xv-ok); }
+      .excaliup-vault-dot[data-tone="pending"] {
+        background: transparent;
+        box-shadow: inset 0 0 0 2px var(--xv-primary);
+      }
+      .excaliup-vault-dot[data-tone="busy"] {
+        background: var(--xv-primary);
+        animation: excaliup-vault-pulse 1s ease-in-out infinite;
+      }
+      .excaliup-vault-dot[data-tone="warn"] { background: var(--xv-warn); }
+      .excaliup-vault-dot[data-tone="error"] { background: var(--xv-danger); }
+      @keyframes excaliup-vault-pulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.4; transform: scale(0.75); }
+      }
+
+      /* --- Launcher button (next to the main menu) --- */
       .excaliup-vault-btn {
         position: relative;
-        height: 36px;
+        height: var(--lg-button-size, 2.5rem);
         margin-left: 8px;
-        padding: 0 12px;
-        border-radius: var(--border-radius-lg, 8px);
-        background: rgba(30, 30, 38, 0.9);
-        border: 1px solid rgba(255, 255, 255, 0.16);
-        color: #ffffff;
-        font-size: 13px;
-        font-weight: 500;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        cursor: pointer;
-        z-index: 2;
+        padding: 0 12px 0 10px;
         display: inline-flex;
         align-items: center;
         gap: 8px;
-        max-width: 180px;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-        backdrop-filter: blur(12px);
-        -webkit-backdrop-filter: blur(12px);
-        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        max-width: 200px;
+        border: none;
+        border-radius: var(--xv-radius);
+        background: var(--xv-bg);
+        box-shadow: var(--xv-shadow);
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
         user-select: none;
         flex-shrink: 0;
         vertical-align: middle;
+        z-index: 2;
+        transition: background-color 0.15s ease;
+      }
+      .excaliup-vault-btn.is-docked {
+        position: absolute;
+        margin-left: 0;
       }
       .excalidraw > .excaliup-vault-btn {
         position: absolute;
-        top: 12px;
-        left: 56px;
+        top: 16px;
+        left: 64px;
         margin-left: 0;
       }
-      .excaliup-vault-btn span.label-text {
+      .excaliup-vault-btn:hover { background: var(--xv-hover); }
+      .excaliup-vault-btn.is-open {
+        background: var(--xv-primary-soft);
+        color: var(--xv-primary);
+      }
+      .excaliup-vault-btn-icon {
+        position: relative;
+        display: inline-flex;
+        font-size: 18px;
+      }
+      .excaliup-vault-btn-icon .excaliup-vault-dot {
+        position: absolute;
+        right: -3px;
+        bottom: -2px;
+        width: 9px;
+        height: 9px;
+        border: 2px solid var(--xv-bg);
+        box-sizing: content-box;
+      }
+      .excaliup-vault-btn-icon .excaliup-vault-dot[data-tone="pending"] {
+        background: var(--xv-bg);
+        box-shadow: inset 0 0 0 2px var(--xv-primary);
+      }
+      .excaliup-vault-btn-label {
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      .excaliup-vault-btn:hover {
-        background: rgba(45, 45, 58, 0.98);
-        border-color: rgba(140, 90, 220, 0.5);
-        transform: translateY(-1px);
-        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
-      }
-      .excaliup-vault-btn.theme--light {
-        background: rgba(255, 255, 255, 0.94);
-        border: 1px solid rgba(0, 0, 0, 0.15);
-        color: #1f2937;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-      }
-      .excaliup-vault-btn.theme--light:hover {
-        background: #ffffff;
-        border-color: rgba(140, 90, 220, 0.5);
-        box-shadow: 0 4px 12px rgba(140, 90, 220, 0.15);
-      }
-      .excaliup-vault-btn .status-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: #10b981;
-        flex-shrink: 0;
-      }
-      .excaliup-vault-btn.status--saving .status-dot {
-        background: #3b82f6;
-        animation: excaliup-vault-pulse 1s infinite;
-      }
-      .excaliup-vault-btn.status--permission .status-dot {
-        background: #f59e0b;
-      }
-      .excaliup-vault-btn.status--unlinked .status-dot {
-        background: #9ca3af;
-      }
-      .excaliup-vault-btn.status--error .status-dot {
-        background: #ef4444;
-      }
-      @keyframes excaliup-vault-pulse {
-        0%, 100% { opacity: 1; transform: scale(1); }
-        50% { opacity: 0.35; transform: scale(0.8); }
-      }
 
-      /* --- Local Vault Drawer --- */
+      /* --- Drawer --- */
       .excaliup-vault-drawer {
         position: absolute;
-        top: 0;
-        left: -400px;
-        width: 380px;
-        height: 100%;
-        background: rgba(20, 20, 28, 0.96);
-        border-right: 1px solid rgba(255, 255, 255, 0.1);
-        box-shadow: 4px 0 24px rgba(0,0,0,0.5);
+        top: 68px;
+        left: 16px;
+        bottom: 16px;
+        width: 340px;
+        max-width: calc(100% - 32px);
         z-index: 10002;
         display: flex;
         flex-direction: column;
-        transition: left 0.28s cubic-bezier(0.16, 1, 0.3, 1);
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-        color: rgba(255, 255, 255, 0.9);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
+        background: var(--xv-bg);
+        border-radius: calc(var(--xv-radius) * 1.5);
+        box-shadow: var(--xv-shadow);
+        overflow: hidden;
+        font-size: 13px;
+        opacity: 0;
+        visibility: hidden;
+        transform: translateX(-12px) scale(0.98);
+        transform-origin: top left;
+        transition: opacity 0.16s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), visibility 0s linear 0.2s;
       }
       .excaliup-vault-drawer.open {
-        left: 0;
+        opacity: 1;
+        visibility: visible;
+        transform: none;
+        transition: opacity 0.16s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), visibility 0s;
       }
-      .excaliup-vault-drawer.theme--light {
-        background: rgba(250, 250, 252, 0.98);
-        border-right: 1px solid rgba(0, 0, 0, 0.1);
-        box-shadow: 4px 0 24px rgba(0,0,0,0.12);
-        color: #1f2937;
+      @media (prefers-reduced-motion: reduce) {
+        .excaliup-vault-drawer,
+        .excaliup-vault-drawer.open { transition: none; }
       }
       .excaliup-vault-header {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 16px 18px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        padding: 10px 10px 6px 16px;
       }
-      .excaliup-vault-drawer.theme--light .excaliup-vault-header {
-        border-bottom-color: rgba(0, 0, 0, 0.08);
-      }
-      .excaliup-vault-header h3 {
-        margin: 0;
-        font-size: 16px;
-        font-weight: 600;
+      .excaliup-vault-title {
         display: flex;
         align-items: center;
         gap: 8px;
+        font-size: 15px;
+        font-weight: 700;
+      }
+      .excaliup-vault-title iconify-icon {
+        font-size: 18px;
+        color: var(--xv-primary);
       }
       .excaliup-vault-header-actions {
         display: flex;
-        align-items: center;
-        gap: 6px;
+        gap: 2px;
       }
-      .excaliup-vault-tool-btn {
-        background: transparent;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        color: inherit;
-        border-radius: 6px;
-        padding: 5px 9px;
-        font-size: 12px;
-        cursor: pointer;
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-        transition: all 0.15s ease;
-      }
-      .excaliup-vault-tool-btn:hover {
-        background: rgba(255, 255, 255, 0.08);
-        border-color: rgba(140, 90, 220, 0.5);
-      }
-      .excaliup-vault-drawer.theme--light .excaliup-vault-tool-btn {
-        border-color: rgba(0, 0, 0, 0.15);
-      }
-      .excaliup-vault-drawer.theme--light .excaliup-vault-tool-btn:hover {
-        background: rgba(0, 0, 0, 0.05);
-      }
-      .excaliup-vault-close {
-        background: transparent;
-        border: none;
-        color: inherit;
-        font-size: 16px;
-        cursor: pointer;
-        padding: 4px 8px;
-        border-radius: 4px;
-        opacity: 0.7;
-      }
-      .excaliup-vault-close:hover {
-        opacity: 1;
-        background: rgba(255, 255, 255, 0.1);
-      }
-      .excaliup-vault-controls {
-        padding: 12px 18px;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-      }
-      .excaliup-vault-drawer.theme--light .excaliup-vault-controls {
-        border-bottom-color: rgba(0, 0, 0, 0.06);
-      }
-      .excaliup-vault-search-box {
-        display: flex;
-        align-items: center;
-        background: rgba(255, 255, 255, 0.05);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 8px;
-        padding: 0 10px;
-        height: 36px;
-      }
-      .excaliup-vault-drawer.theme--light .excaliup-vault-search-box {
-        background: #ffffff;
-        border-color: rgba(0, 0, 0, 0.12);
-      }
-      .excaliup-vault-search-box input {
-        flex: 1;
-        background: transparent;
-        border: none;
-        outline: none;
-        color: inherit;
-        font-size: 13px;
-        margin-left: 6px;
-      }
-      .excaliup-vault-search-box button {
-        background: none;
-        border: none;
-        color: inherit;
-        opacity: 0.5;
-        cursor: pointer;
-      }
-      .excaliup-vault-actions-row {
-        display: flex;
-        gap: 8px;
-      }
-      .excaliup-vault-btn-primary {
-        flex: 1;
-        background: hsl(270, 75%, 64%);
-        color: #fff;
-        border: none;
-        border-radius: 6px;
-        padding: 8px 12px;
-        font-size: 13px;
-        font-weight: 500;
-        cursor: pointer;
+      .excaliup-vault-icon-btn {
+        width: 32px;
+        height: 32px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        gap: 6px;
-        transition: background 0.15s ease;
-      }
-      .excaliup-vault-btn-primary:hover {
-        background: hsl(270, 75%, 58%);
-      }
-      .excaliup-vault-btn-secondary {
-        background: rgba(255, 255, 255, 0.08);
-        color: inherit;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 6px;
-        padding: 8px 12px;
-        font-size: 13px;
-        cursor: pointer;
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-      }
-      .excaliup-vault-drawer.theme--light .excaliup-vault-btn-secondary {
-        background: #ffffff;
-        border-color: rgba(0, 0, 0, 0.12);
-      }
-      .excaliup-vault-tabs {
-        display: flex;
-        background: rgba(0, 0, 0, 0.2);
-        border-radius: 6px;
-        padding: 3px;
-        gap: 2px;
-      }
-      .excaliup-vault-drawer.theme--light .excaliup-vault-tabs {
-        background: rgba(0, 0, 0, 0.06);
-      }
-      .excaliup-vault-tab {
-        flex: 1;
+        border: none;
+        border-radius: var(--xv-radius);
         background: transparent;
-        border: none;
-        color: inherit;
-        padding: 6px 10px;
-        font-size: 12px;
-        font-weight: 500;
-        border-radius: 4px;
+        color: var(--xv-muted) !important;
+        font-size: 16px;
         cursor: pointer;
-        opacity: 0.7;
-        transition: all 0.15s ease;
       }
-      .excaliup-vault-tab.active {
-        background: rgba(255, 255, 255, 0.12);
-        opacity: 1;
+      .excaliup-vault-icon-btn:hover {
+        background: var(--xv-hover);
+        color: var(--xv-text) !important;
       }
-      .excaliup-vault-drawer.theme--light .excaliup-vault-tab.active {
-        background: #ffffff;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-      }
-      .excaliup-vault-breadcrumbs {
+
+      /* Connected-folder card */
+      .excaliup-vault-status {
+        margin: 4px 12px 8px;
+        padding: 10px 10px 10px 12px;
         display: flex;
         align-items: center;
-        gap: 4px;
-        padding: 8px 18px;
-        font-size: 12px;
-        color: rgba(255, 255, 255, 0.6);
-        overflow-x: auto;
-        white-space: nowrap;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        gap: 10px;
+        border-radius: var(--xv-radius);
+        background: var(--xv-surface-soft);
+        border: 1px solid var(--xv-border);
       }
-      .excaliup-vault-drawer.theme--light .excaliup-vault-breadcrumbs {
-        color: rgba(0, 0, 0, 0.6);
-        border-bottom-color: rgba(0, 0, 0, 0.04);
+      .excaliup-vault-status[hidden] { display: none; }
+      .excaliup-vault-status[data-tone="error"] {
+        border-color: color-mix(in srgb, var(--xv-danger) 45%, transparent);
       }
-      .excaliup-vault-crumb {
-        cursor: pointer;
+      .excaliup-vault-status[data-tone="warn"] {
+        border-color: color-mix(in srgb, var(--xv-warn) 45%, transparent);
+      }
+      .excaliup-vault-status-icon {
+        width: 32px;
+        height: 32px;
         display: inline-flex;
         align-items: center;
-        gap: 3px;
-        padding: 2px 4px;
-        border-radius: 4px;
+        justify-content: center;
+        border-radius: var(--xv-radius);
+        background: var(--xv-primary-soft);
+        color: var(--xv-primary);
+        font-size: 17px;
+        flex-shrink: 0;
       }
-      .excaliup-vault-crumb:hover {
-        color: hsl(270, 75%, 70%);
-        background: rgba(255, 255, 255, 0.06);
-      }
-      .excaliup-vault-drawer.theme--light .excaliup-vault-crumb:hover {
-        color: hsl(270, 75%, 45%);
-        background: rgba(0, 0, 0, 0.05);
-      }
-      .excaliup-vault-list {
-        flex: 1;
-        overflow-y: auto;
-        padding: 8px 12px;
+      .excaliup-vault-status-text {
         display: flex;
         flex-direction: column;
-        gap: 4px;
-      }
-      .excaliup-vault-item {
-        display: flex;
-        align-items: center;
-        padding: 8px 10px;
-        border-radius: 6px;
-        cursor: pointer;
-        gap: 8px;
-        transition: all 0.15s ease;
-        user-select: none;
-      }
-      .excaliup-vault-item:hover {
-        background: rgba(255, 255, 255, 0.06);
-      }
-      .excaliup-vault-drawer.theme--light .excaliup-vault-item:hover {
-        background: rgba(0, 0, 0, 0.04);
-      }
-      .excaliup-vault-item.active {
-        background: hsla(270, 75%, 64%, 0.15);
-        border: 1px solid hsla(270, 75%, 64%, 0.35);
-      }
-      .excaliup-vault-item-star {
-        background: none;
-        border: none;
-        color: #fbbf24;
-        cursor: pointer;
-        padding: 2px;
-        font-size: 15px;
-        opacity: 0.4;
-        transition: opacity 0.15s ease;
-      }
-      .excaliup-vault-item-star.starred {
-        opacity: 1;
-      }
-      .excaliup-vault-item-star:hover {
-        opacity: 1;
-      }
-      .excaliup-vault-item-icon {
-        font-size: 18px;
-        display: flex;
-        align-items: center;
-      }
-      .excaliup-vault-item-info {
-        flex: 1;
+        gap: 2px;
         min-width: 0;
-        display: flex;
-        flex-direction: column;
+        flex: 1;
       }
-      .excaliup-vault-item-name {
-        font-size: 13px;
-        font-weight: 500;
+      .excaliup-vault-status-name {
+        font-weight: 700;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      .excaliup-vault-item-meta {
-        font-size: 11px;
-        opacity: 0.55;
-        margin-top: 2px;
+      .excaliup-vault-status-detail {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--xv-muted);
+        min-width: 0;
       }
-      .excaliup-vault-item-badge {
-        font-size: 10px;
-        padding: 2px 6px;
-        border-radius: 10px;
-        background: #10b981;
-        color: #fff;
+      .excaliup-vault-status-detail > span:last-child {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .excaliup-vault-status-detail strong {
+        color: var(--xv-text);
         font-weight: 600;
       }
-      .excaliup-vault-item-menu-btn {
-        background: transparent;
+      .excaliup-vault-link-btn {
         border: none;
-        color: inherit;
-        opacity: 0.5;
-        padding: 4px;
-        border-radius: 4px;
+        background: transparent;
+        color: var(--xv-primary) !important;
+        font-weight: 600 !important;
+        font-size: 12px !important;
+        padding: 6px 8px;
+        border-radius: var(--xv-radius);
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+      .excaliup-vault-link-btn:hover { background: var(--xv-primary-soft); }
+
+      /* Search, actions, tabs */
+      .excaliup-vault-controls {
+        padding: 0 12px 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .excaliup-vault-drawer.is-disconnected .excaliup-vault-controls,
+      .excaliup-vault-drawer.is-disconnected .excaliup-vault-hint { display: none; }
+      .excaliup-vault-search {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 36px;
+        padding: 0 6px 0 10px;
+        border-radius: var(--xv-radius);
+        border: 1px solid var(--xv-border);
+        background: var(--xv-bg);
+        color: var(--xv-muted);
+        font-size: 15px;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      }
+      .excaliup-vault-search:focus-within {
+        border-color: var(--xv-primary);
+        box-shadow: 0 0 0 3px var(--xv-primary-soft);
+      }
+      .excaliup-vault-drawer .excaliup-vault-search input[type="text"] {
+        flex: 1;
+        min-width: 0;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        border: none;
+        border-radius: 0;
+        box-shadow: none;
+        outline: none;
+        background: transparent;
+        color: var(--xv-text);
+        font: inherit;
+        font-size: 13px;
+      }
+      .excaliup-vault-search input::placeholder { color: var(--xv-faint); }
+      .excaliup-vault-search-clear {
+        display: none;
+        width: 24px;
+        height: 24px;
+        align-items: center;
+        justify-content: center;
+        border: none;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--xv-muted) !important;
         cursor: pointer;
       }
-      .excaliup-vault-item-menu-btn:hover {
-        opacity: 1;
-        background: rgba(255, 255, 255, 0.1);
+      .excaliup-vault-search-clear:hover { background: var(--xv-hover); }
+      .excaliup-vault-drawer.has-query .excaliup-vault-search-clear { display: inline-flex; }
+      .excaliup-vault-actions {
+        display: flex;
+        gap: 8px;
       }
+      .excaliup-vault-actions .is-primary { flex: 1; }
+      .excaliup-vault-button {
+        height: 34px;
+        padding: 0 12px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        border-radius: var(--xv-radius);
+        border: 1px solid var(--xv-border);
+        background: var(--xv-bg);
+        font-size: 13px !important;
+        font-weight: 600 !important;
+        cursor: pointer;
+        white-space: nowrap;
+        transition: background-color 0.15s ease, border-color 0.15s ease;
+      }
+      .excaliup-vault-button:hover { background: var(--xv-hover); }
+      .excaliup-vault-button:disabled { opacity: 0.6; cursor: default; }
+      .excaliup-vault-button iconify-icon { font-size: 16px; }
+      .excaliup-vault-button.is-primary {
+        border-color: transparent;
+        background: var(--xv-primary);
+        color: var(--xv-on-primary) !important;
+      }
+      .excaliup-vault-button.is-primary:hover { background: var(--xv-primary-strong); }
+      .excaliup-vault-button.is-danger {
+        border-color: transparent;
+        background: var(--xv-danger);
+        color: var(--xv-on-primary) !important;
+      }
+      .excaliup-vault-button.is-danger:hover {
+        background: color-mix(in srgb, var(--xv-danger) 85%, #000000);
+      }
+      .excaliup-vault-tabs {
+        display: flex;
+        gap: 2px;
+        padding: 3px;
+        border-radius: var(--xv-radius);
+        background: var(--xv-surface);
+      }
+      .excaliup-vault-tabs [role="tab"] {
+        flex: 1;
+        height: 28px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        border: none;
+        border-radius: calc(var(--xv-radius) - 2px);
+        background: transparent;
+        color: var(--xv-muted) !important;
+        font-size: 12px !important;
+        font-weight: 600 !important;
+        cursor: pointer;
+      }
+      .excaliup-vault-tabs [role="tab"]:hover { color: var(--xv-text) !important; }
+      .excaliup-vault-tabs [role="tab"].is-active {
+        background: var(--xv-bg);
+        color: var(--xv-text) !important;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+      }
+      .excaliup-vault-count {
+        min-width: 18px;
+        padding: 0 5px;
+        border-radius: 9px;
+        background: var(--xv-border);
+        font-size: 10px;
+        line-height: 16px;
+        font-variant-numeric: tabular-nums;
+      }
+      .excaliup-vault-tabs [role="tab"].is-active .excaliup-vault-count {
+        background: var(--xv-primary-soft);
+        color: var(--xv-primary);
+      }
+
+      /* Breadcrumbs */
+      .excaliup-vault-crumbs {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        padding: 2px 12px 6px;
+        overflow-x: auto;
+        white-space: nowrap;
+        scrollbar-width: none;
+      }
+      .excaliup-vault-crumbs[hidden] { display: none; }
+      .excaliup-vault-crumb {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        max-width: 160px;
+        padding: 3px 6px;
+        border: 1px dashed transparent;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--xv-muted) !important;
+        font-size: 12px !important;
+        cursor: pointer;
+      }
+      .excaliup-vault-crumb span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .excaliup-vault-crumb:hover { background: var(--xv-hover); color: var(--xv-text) !important; }
+      .excaliup-vault-crumb.is-current {
+        color: var(--xv-text) !important;
+        font-weight: 600 !important;
+      }
+      .excaliup-vault-crumb-sep {
+        font-size: 12px;
+        color: var(--xv-faint);
+      }
+
+      /* List */
+      .excaliup-vault-list {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 0 8px 8px;
+        border-top: 1px solid var(--xv-border);
+        scrollbar-width: thin;
+      }
+      .excaliup-vault-drawer.is-disconnected .excaliup-vault-list { border-top: none; }
+      .excaliup-vault-section-label {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        padding: 10px 8px 4px;
+        background: var(--xv-bg);
+        color: var(--xv-faint);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .excaliup-vault-row {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 44px;
+        padding: 4px 4px 4px 6px;
+        border-radius: var(--xv-radius);
+        border: 1px solid transparent;
+        cursor: pointer;
+        user-select: none;
+        outline: none;
+      }
+      .excaliup-vault-row:hover { background: var(--xv-hover); }
+      .excaliup-vault-row:focus-visible {
+        border-color: var(--xv-primary);
+        background: var(--xv-hover);
+      }
+      .excaliup-vault-row.is-active { background: var(--xv-primary-soft); }
+      .excaliup-vault-row.is-active::before {
+        content: "";
+        position: absolute;
+        left: -4px;
+        top: 10px;
+        bottom: 10px;
+        width: 3px;
+        border-radius: 3px;
+        background: var(--xv-primary);
+      }
+      .excaliup-vault-row.is-dragging { opacity: 0.45; }
+      .excaliup-vault-row.is-drop-target,
+      .excaliup-vault-crumb.is-drop-target {
+        border-style: dashed;
+        border-color: var(--xv-primary);
+        background: var(--xv-primary-soft);
+      }
+      .excaliup-vault-row-icon {
+        width: 30px;
+        height: 30px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: var(--xv-radius);
+        background: var(--xv-primary-soft);
+        color: var(--xv-primary);
+        font-size: 16px;
+        flex-shrink: 0;
+      }
+      .excaliup-vault-row-text {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+      .excaliup-vault-row-name {
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .excaliup-vault-row-meta {
+        font-size: 11px;
+        color: var(--xv-muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .excaliup-vault-row-chevron {
+        font-size: 14px;
+        color: var(--xv-faint);
+      }
+      .excaliup-vault-star,
+      .excaliup-vault-row-menu {
+        width: 30px;
+        height: 30px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: none;
+        border-radius: var(--xv-radius);
+        background: transparent;
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+      .excaliup-vault-star {
+        color: var(--xv-faint) !important;
+        font-size: 18px;
+      }
+      .excaliup-vault-star:hover { color: #f59f00 !important; background: var(--xv-bg); }
+      .excaliup-vault-star.is-starred { color: #f59f00 !important; }
+      .excaliup-vault-row-menu {
+        color: var(--xv-muted) !important;
+        font-size: 16px;
+        opacity: 0;
+      }
+      .excaliup-vault-row:hover .excaliup-vault-row-menu,
+      .excaliup-vault-row:focus-within .excaliup-vault-row-menu,
+      .excaliup-vault-row-menu[aria-expanded="true"] { opacity: 1; }
+      .excaliup-vault-row-menu:hover { background: var(--xv-bg); color: var(--xv-text) !important; }
+      .excaliup-vault-chip {
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: var(--xv-primary);
+        color: var(--xv-on-primary);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        flex-shrink: 0;
+      }
+
+      /* Empty & onboarding states */
       .excaliup-vault-empty {
-        padding: 40px 20px;
-        text-align: center;
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 12px;
-        opacity: 0.7;
+        gap: 8px;
+        padding: 40px 20px;
+        text-align: center;
       }
+      .excaliup-vault-empty-icon {
+        width: 52px;
+        height: 52px;
+        margin-bottom: 4px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 16px;
+        background: var(--xv-primary-soft);
+        color: var(--xv-primary);
+        font-size: 26px;
+      }
+      .excaliup-vault-empty-title {
+        font-size: 14px;
+        font-weight: 700;
+      }
+      .excaliup-vault-empty-text {
+        max-width: 250px;
+        color: var(--xv-muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .excaliup-vault-empty .excaliup-vault-button { margin-top: 8px; }
+
       .excaliup-vault-footer {
-        padding: 10px 18px;
-        font-size: 11px;
-        opacity: 0.65;
-        border-top: 1px solid rgba(255, 255, 255, 0.06);
         display: flex;
         align-items: center;
         justify-content: space-between;
+        gap: 8px;
+        padding: 8px 14px;
+        border-top: 1px solid var(--xv-border);
+        color: var(--xv-muted);
+        font-size: 11px;
       }
-      .excaliup-vault-drawer.theme--light .excaliup-vault-footer {
-        border-top-color: rgba(0, 0, 0, 0.06);
+      .excaliup-vault-hint {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        white-space: nowrap;
       }
 
-      /* --- Context Popover Menu --- */
+      /* --- Row action menu --- */
       .excaliup-vault-popover {
         position: fixed;
-        background: rgba(26, 26, 36, 0.96);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 10px;
-        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
-        backdrop-filter: blur(16px);
-        -webkit-backdrop-filter: blur(16px);
-        z-index: 10005;
+        z-index: 10008;
+        min-width: 188px;
         padding: 6px;
-        min-width: 140px;
         display: flex;
         flex-direction: column;
-        gap: 2px;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        color: rgba(255, 255, 255, 0.9);
-        animation: excaliup-popover-in 0.15s cubic-bezier(0.16, 1, 0.3, 1);
-      }
-      .excaliup-vault-popover.theme--light {
-        background: rgba(255, 255, 255, 0.98);
-        border: 1px solid rgba(0, 0, 0, 0.12);
-        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
-        color: #1f2937;
+        gap: 1px;
+        background: var(--xv-bg);
+        border-radius: var(--xv-radius);
+        box-shadow: var(--xv-shadow);
+        font-size: 13px;
+        animation: excaliup-vault-pop 0.12s ease-out;
       }
       .excaliup-vault-popover-item {
         display: flex;
         align-items: center;
-        gap: 8px;
-        padding: 8px 10px;
-        border-radius: 6px;
-        font-size: 13px;
-        font-weight: 500;
-        cursor: pointer;
-        border: none;
-        background: transparent;
-        color: inherit;
+        gap: 10px;
         width: 100%;
+        height: 32px;
+        padding: 0 8px;
+        border: none;
+        border-radius: calc(var(--xv-radius) - 2px);
+        background: transparent;
         text-align: left;
-        transition: background 0.12s ease;
+        cursor: pointer;
       }
-      .excaliup-vault-popover-item:hover {
-        background: rgba(255, 255, 255, 0.08);
+      .excaliup-vault-popover-item span { flex: 1; }
+      .excaliup-vault-popover-item iconify-icon {
+        font-size: 16px;
+        color: var(--xv-muted);
       }
-      .excaliup-vault-popover.theme--light .excaliup-vault-popover-item:hover {
-        background: rgba(0, 0, 0, 0.05);
+      .excaliup-vault-popover-item:hover,
+      .excaliup-vault-popover-item:focus-visible {
+        background: var(--xv-hover);
+        outline: none;
       }
-      .excaliup-vault-popover-item.danger {
-        color: #f87171;
+      .excaliup-vault-popover-item.is-danger,
+      .excaliup-vault-popover-item.is-danger iconify-icon { color: var(--xv-danger) !important; }
+      .excaliup-vault-popover-item.is-danger:hover,
+      .excaliup-vault-popover-item.is-danger:focus-visible {
+        background: color-mix(in srgb, var(--xv-danger) 12%, transparent);
       }
-      .excaliup-vault-popover-item.danger:hover {
-        background: rgba(239, 68, 68, 0.15);
-        color: #ef4444;
+      .excaliup-vault-popover-sep {
+        height: 1px;
+        margin: 4px 6px;
+        background: var(--xv-border);
       }
-      @keyframes excaliup-popover-in {
-        from { opacity: 0; transform: scale(0.95) translateY(-4px); }
-        to { opacity: 1; transform: scale(1) translateY(0); }
+      @keyframes excaliup-vault-pop {
+        from { opacity: 0; transform: translateY(-4px); }
+        to { opacity: 1; transform: none; }
       }
 
-      /* --- Modal Dialogs (Prompt & Confirm) --- */
+      /* --- Dialogs --- */
       .excaliup-vault-modal-overlay {
         position: fixed;
-        top: 0;
-        left: 0;
-        width: 100vw;
-        height: 100vh;
-        background: rgba(0, 0, 0, 0.6);
-        backdrop-filter: blur(6px);
-        -webkit-backdrop-filter: blur(6px);
+        inset: 0;
         z-index: 10010;
         display: flex;
         align-items: center;
         justify-content: center;
-        animation: excaliup-fade-in 0.15s ease-out;
+        padding: 16px;
+        background: color-mix(in srgb, var(--overlay-bg-color, rgba(255, 255, 255, 0.88)) 80%, transparent);
+        animation: excaliup-vault-fade 0.12s ease-out;
       }
       .excaliup-vault-modal {
-        width: 90%;
-        max-width: 420px;
-        background: rgba(24, 24, 32, 0.98);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 14px;
-        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
-        padding: 22px;
-        color: #ffffff;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        width: 380px;
+        max-width: 100%;
+        padding: 20px;
         display: flex;
         flex-direction: column;
         gap: 16px;
-        animation: excaliup-modal-scale 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-      }
-      .excaliup-vault-modal.theme--light {
-        background: #ffffff;
-        border: 1px solid rgba(0, 0, 0, 0.12);
-        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.18);
-        color: #111827;
+        background: var(--xv-bg);
+        border-radius: calc(var(--xv-radius) * 1.5);
+        box-shadow: var(--xv-shadow), 0 20px 40px rgba(0, 0, 0, 0.12);
+        font-size: 13px;
+        animation: excaliup-vault-pop 0.16s ease-out;
       }
       .excaliup-vault-modal-header {
         display: flex;
-        align-items: center;
         gap: 12px;
+        align-items: flex-start;
       }
       .excaliup-vault-modal-icon {
-        width: 38px;
-        height: 38px;
-        border-radius: 10px;
-        display: flex;
+        width: 36px;
+        height: 36px;
+        display: inline-flex;
         align-items: center;
         justify-content: center;
-        font-size: 20px;
-        background: rgba(140, 90, 220, 0.15);
-        color: hsl(270, 75%, 70%);
+        border-radius: var(--xv-radius);
+        background: var(--xv-primary-soft);
+        color: var(--xv-primary);
+        font-size: 18px;
         flex-shrink: 0;
       }
-      .excaliup-vault-modal-icon.danger {
-        background: rgba(239, 68, 68, 0.15);
-        color: #ef4444;
+      .excaliup-vault-modal[data-tone="danger"] .excaliup-vault-modal-icon {
+        background: color-mix(in srgb, var(--xv-danger) 14%, transparent);
+        color: var(--xv-danger);
       }
       .excaliup-vault-modal-title {
-        font-size: 16px;
-        font-weight: 600;
+        font-size: 15px;
+        font-weight: 700;
+        line-height: 36px;
       }
       .excaliup-vault-modal-desc {
-        font-size: 13px;
-        opacity: 0.75;
-        line-height: 1.4;
-        margin-top: 2px;
+        margin-top: -4px;
+        color: var(--xv-muted);
+        line-height: 1.5;
       }
-      .excaliup-vault-modal-input {
+      .excaliup-vault-modal-fields {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .excaliup-vault-field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--xv-muted);
+      }
+      .excaliup-vault-modal-overlay .excaliup-vault-input {
         width: 100%;
-        background: rgba(255, 255, 255, 0.06);
-        border: 1px solid rgba(255, 255, 255, 0.15);
-        border-radius: 8px;
-        padding: 10px 12px;
-        color: inherit;
-        font-size: 14px;
+        margin: 0;
+        height: 36px;
+        padding: 0 10px;
+        border-radius: var(--xv-radius);
+        border: 1px solid var(--input-border-color, var(--xv-border));
+        background: var(--input-bg-color, var(--xv-bg));
+        color: var(--xv-text);
+        font: inherit;
+        font-size: 13px;
+        font-weight: 400;
         outline: none;
-        box-sizing: border-box;
-        transition: border-color 0.15s ease, box-shadow 0.15s ease;
       }
-      .excaliup-vault-modal-input:focus {
-        border-color: hsl(270, 75%, 64%);
-        box-shadow: 0 0 0 3px rgba(140, 90, 220, 0.25);
+      .excaliup-vault-modal-overlay .excaliup-vault-input:focus {
+        border-color: var(--xv-primary);
+        box-shadow: 0 0 0 3px var(--xv-primary-soft);
       }
-      .excaliup-vault-modal.theme--light .excaliup-vault-modal-input {
-        background: #f9fafb;
-        border-color: rgba(0, 0, 0, 0.15);
+      .excaliup-vault-modal-error {
+        margin-top: -6px;
+        padding: 8px 10px;
+        border-radius: var(--xv-radius);
+        background: color-mix(in srgb, var(--xv-danger) 12%, transparent);
+        color: var(--xv-danger);
+        font-size: 12px;
+        font-weight: 600;
       }
+      .excaliup-vault-modal-error[hidden] { display: none; }
       .excaliup-vault-modal-actions {
         display: flex;
         justify-content: flex-end;
-        gap: 10px;
-        margin-top: 4px;
+        gap: 8px;
       }
-      .excaliup-vault-modal-btn {
-        padding: 8px 16px;
-        border-radius: 8px;
-        font-size: 13px;
-        font-weight: 500;
-        cursor: pointer;
-        border: none;
-        transition: all 0.15s ease;
-      }
-      .excaliup-vault-modal-btn.secondary {
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        color: inherit;
-      }
-      .excaliup-vault-modal-btn.secondary:hover {
-        background: rgba(255, 255, 255, 0.14);
-      }
-      .excaliup-vault-modal.theme--light .excaliup-vault-modal-btn.secondary {
-        background: #f3f4f6;
-        border-color: rgba(0, 0, 0, 0.12);
-      }
-      .excaliup-vault-modal.theme--light .excaliup-vault-modal-btn.secondary:hover {
-        background: #e5e7eb;
-      }
-      .excaliup-vault-modal-btn.primary {
-        background: hsl(270, 75%, 64%);
-        color: #ffffff;
-      }
-      .excaliup-vault-modal-btn.primary:hover {
-        background: hsl(270, 75%, 58%);
-      }
-      .excaliup-vault-modal-btn.danger {
-        background: #ef4444;
-        color: #ffffff;
-      }
-      .excaliup-vault-modal-btn.danger:hover {
-        background: #dc2626;
-      }
-      .excaliup-vault-item[draggable="true"] {
-        cursor: grab;
-      }
-      .excaliup-vault-item[draggable="true"]:active {
-        cursor: grabbing;
-      }
-      .excaliup-vault-item.dragging {
-        opacity: 0.45;
-        transform: scale(0.98);
-      }
-      .excaliup-vault-item.drag-target {
-        background: hsla(270, 75%, 64%, 0.25) !important;
-        outline: 2px dashed hsl(270, 75%, 64%);
-        outline-offset: -2px;
-      }
-      .excaliup-vault-crumb.drag-target {
-        background: hsla(270, 75%, 64%, 0.3) !important;
-        color: hsl(270, 75%, 70%) !important;
-        outline: 2px dashed hsl(270, 75%, 64%);
-      }
-      .excaliup-vault-folder-actions {
-        display: flex;
-        align-items: center;
-        gap: 2px;
-        opacity: 0;
-        transition: opacity 0.15s ease;
-      }
-      .excaliup-vault-item:hover .excaliup-vault-folder-actions {
-        opacity: 1;
-      }
-      .excaliup-vault-folder-del-btn {
-        background: transparent;
-        border: none;
-        color: inherit;
-        opacity: 0.6;
-        padding: 4px;
-        border-radius: 4px;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        transition: all 0.12s ease;
-      }
-      .excaliup-vault-folder-del-btn:hover {
-        opacity: 1;
-        color: #ef4444;
-        background: rgba(239, 68, 68, 0.15);
-      }
-      .excaliup-vault-modal-label {
-        font-size: 12px;
-        font-weight: 500;
-        opacity: 0.8;
-        margin-bottom: -10px;
-      }
-      .excaliup-vault-modal-select {
-        width: 100%;
-        background: rgba(255, 255, 255, 0.06);
-        border: 1px solid rgba(255, 255, 255, 0.15);
-        border-radius: 8px;
-        padding: 10px 12px;
-        color: inherit;
-        font-size: 14px;
-        outline: none;
-        box-sizing: border-box;
-        transition: border-color 0.15s ease, box-shadow 0.15s ease;
-        cursor: pointer;
-      }
-      .excaliup-vault-modal-select option {
-        background: #181820;
-        color: #ffffff;
-      }
-      .excaliup-vault-modal.theme--light .excaliup-vault-modal-select {
-        background: #f9fafb;
-        border-color: rgba(0, 0, 0, 0.15);
-        color: #111827;
-      }
-      .excaliup-vault-modal.theme--light .excaliup-vault-modal-select option {
-        background: #ffffff;
-        color: #111827;
-      }
-      .excaliup-vault-modal-select:focus {
-        border-color: hsl(270, 75%, 64%);
-        box-shadow: 0 0 0 3px rgba(140, 90, 220, 0.25);
-      }
-      @keyframes excaliup-fade-in {
+      @keyframes excaliup-vault-fade {
         from { opacity: 0; }
         to { opacity: 1; }
       }
-      @keyframes excaliup-modal-scale {
-        from { opacity: 0; transform: scale(0.92) translateY(8px); }
-        to { opacity: 1; transform: scale(1) translateY(0); }
+
+      @media (max-width: 520px) {
+        .excaliup-vault-btn-label { display: none; }
+        .excaliup-vault-btn { padding: 0 10px; }
+        .excaliup-vault-drawer {
+          left: 8px;
+          right: 8px;
+          width: auto;
+          max-width: none;
+          bottom: 8px;
+        }
+        .excaliup-vault-hint { display: none; }
       }
     `;
     document.head.appendChild(style);
@@ -4036,6 +4006,26 @@
           <button id="excaligif-icons-search-clear">✕</button>
         </div>
         
+        <div class="excaligif-icons-insert">
+          <div class="excaligif-icons-filter">
+            <label>Insert color</label>
+            <div class="excaligif-icons-segmented is-compact" id="excaligif-icons-color" role="group" aria-label="Insert color">
+              <button type="button" data-color="stroke" title="Use the current stroke color (single-color packs)">
+                <span class="excaligif-color-swatch" aria-hidden="true"></span>Stroke
+              </button>
+              <button type="button" data-color="original" title="Keep the icon's own colors">Original</button>
+            </div>
+          </div>
+          <div class="excaligif-icons-filter">
+            <label>Size</label>
+            <div class="excaligif-icons-segmented is-compact" id="excaligif-icons-size" role="group" aria-label="Insert size">
+              <button type="button" data-size="48" title="48 px">S</button>
+              <button type="button" data-size="96" title="96 px">M</button>
+              <button type="button" data-size="160" title="160 px">L</button>
+            </div>
+          </div>
+        </div>
+
         <div class="excaligif-icons-filters">
           <div class="excaligif-icons-filter">
             <label for="excaligif-icons-pack">Icon pack</label>
@@ -4062,7 +4052,7 @@
       <div class="excaligif-icons-pagination" id="excaligif-icons-pagination"></div>
       
       <div class="excaligif-icons-footer" id="excaligif-icons-footer">
-        Click to copy & paste, or drag to canvas
+        Click to insert, or drag onto the canvas
       </div>
     `;
     excalidraw.appendChild(sidebarElement);
@@ -4146,11 +4136,60 @@
       loadIconResults();
     });
 
+    for (const button of sidebarElement.querySelectorAll('#excaligif-icons-color button')) {
+      button.addEventListener('click', () => {
+        iconInsertPrefs.color = button.dataset.color;
+        saveIconInsertPrefs();
+        updateIconInsertControls();
+      });
+    }
+    for (const button of sidebarElement.querySelectorAll('#excaligif-icons-size button')) {
+      button.addEventListener('click', () => {
+        iconInsertPrefs.size = Number(button.dataset.size);
+        saveIconInsertPrefs();
+        updateIconInsertControls();
+      });
+    }
+
     // Arrow navigation & general keyboard handling
     document.addEventListener('keydown', onKeyDown, true);
 
     updateIconViewControls();
+    updateIconInsertControls();
     updateSidebarTheme();
+  }
+
+  function getCanvasStrokeColor() {
+    const color = currentApp && currentApp.state && currentApp.state.currentItemStrokeColor;
+    return typeof color === 'string' && /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(color)
+      ? color
+      : null;
+  }
+
+  let lastIconTint = '';
+  function updateIconInsertControls() {
+    if (!sidebarElement) return;
+    for (const button of sidebarElement.querySelectorAll('#excaligif-icons-color button')) {
+      const isActive = button.dataset.color === iconInsertPrefs.color;
+      button.classList.toggle('active', isActive);
+      button.setAttribute('aria-pressed', String(isActive));
+    }
+    for (const button of sidebarElement.querySelectorAll('#excaligif-icons-size button')) {
+      const isActive = Number(button.dataset.size) === iconInsertPrefs.size;
+      button.classList.toggle('active', isActive);
+      button.setAttribute('aria-pressed', String(isActive));
+    }
+    updateIconTint(true);
+  }
+
+  // Previews the grid in the colour icons will be inserted with.
+  function updateIconTint(force = false) {
+    if (!sidebarElement) return;
+    const tint = iconInsertPrefs.color === 'stroke' ? getCanvasStrokeColor() || '' : '';
+    if (!force && tint === lastIconTint) return;
+    lastIconTint = tint;
+    sidebarElement.style.setProperty('--excaligif-stroke', tint || 'currentColor');
+    sidebarElement.classList.toggle('is-tinted', !!tint);
   }
 
   function updateIconViewControls() {
@@ -4173,6 +4212,9 @@
 
   function onKeyDown(e) {
     if (!sidebarElement) return;
+    if (e.target && e.target.closest && e.target.closest('.excaliup-vault-drawer, .excaliup-vault-modal-overlay, .excaliup-vault-popover')) {
+      return;
+    }
     if (e.key === 'Escape' && sidebarElement.classList.contains('open')) {
       e.preventDefault();
       closeSidebar();
@@ -4404,7 +4446,7 @@
       card.className = 'excaligif-icon-card';
       card.setAttribute('draggable', 'true');
       const collectionName = icon.collection ? icon.collection.name : icon.prefix;
-      card.setAttribute('title', `${icon.name}\n${collectionName}\nClick to copy & paste\nDrag to canvas`);
+      card.setAttribute('title', `${icon.name}\n${collectionName}\nClick to insert · Drag onto the canvas`);
 
       card.innerHTML = `
         <button type="button" class="excaligif-icon-favorite${favoriteIcons.has(icon.icon) ? ' active' : ''}" title="${favoriteIcons.has(icon.icon) ? 'Remove from favorites' : 'Add to favorites'}" aria-label="${favoriteIcons.has(icon.icon) ? 'Remove from favorites' : 'Add to favorites'}">
@@ -4456,31 +4498,28 @@
       });
 
       card.addEventListener('click', async () => {
-        card.innerHTML = '<div class="spinner-small" style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.2);border-top-color:currentColor;border-radius:50%;animation:excaligif-spin 0.6s linear infinite;margin-bottom:6px;"></div><span class="icon-name">Fetching...</span>';
-        
+        if (card.classList.contains('is-loading')) return;
+        card.classList.add('is-loading');
         try {
           const svgContent = await getSvgContent(icon.icon);
-          if (svgContent) {
-            await navigator.clipboard.writeText(svgContent);
-            showToast(`"${icon.name}" copied!`);
-
-            queueAnimatedSvgImport(svgContent);
-            const clipboardData = new DataTransfer();
-            clipboardData.setData('text/plain', svgContent);
-            const pasteEvent = new ClipboardEvent('paste', {
-              clipboardData,
-              bubbles: true,
-              cancelable: true
-            });
-            document.activeElement.dispatchEvent(pasteEvent);
-          } else {
-            showToast("Failed to fetch SVG");
+          if (!svgContent) {
+            showToast('Could not load that icon');
+            return;
           }
+          queueAnimatedSvgImport(svgContent);
+          pasteSvgIntoCanvas(svgContent);
+          // Copying is a bonus (paste it elsewhere); it fails when the page is not focused.
+          let copied = false;
+          try {
+            await navigator.clipboard.writeText(svgContent);
+            copied = true;
+          } catch {}
+          showToast(copied ? `Inserted “${icon.name}” · SVG copied` : `Inserted “${icon.name}”`);
         } catch (err) {
-          console.error("[Excali Up] Copy failed:", err);
-          showToast("Copy failed");
+          console.error('[Excali Up] Icon insert failed:', err);
+          showToast('Could not insert that icon');
         } finally {
-          renderIconsGrid();
+          card.classList.remove('is-loading');
         }
       });
 
@@ -4547,6 +4586,7 @@
 
   function updateSidebarTheme() {
     if (!currentApp) return;
+    updateIconTint();
     const theme = currentApp.state.theme || 'light';
     if (theme === 'dark') {
       if (sidebarElement) {
@@ -4557,14 +4597,6 @@
         sidebarButton.classList.remove('theme--light');
         sidebarButton.classList.add('theme--dark');
       }
-      if (vaultDrawerElement) {
-        vaultDrawerElement.classList.remove('theme--light');
-        vaultDrawerElement.classList.add('theme--dark');
-      }
-      if (vaultStatusButton) {
-        vaultStatusButton.classList.remove('theme--light');
-        vaultStatusButton.classList.add('theme--dark');
-      }
     } else {
       if (sidebarElement) {
         sidebarElement.classList.remove('theme--dark');
@@ -4573,14 +4605,6 @@
       if (sidebarButton) {
         sidebarButton.classList.remove('theme--dark');
         sidebarButton.classList.add('theme--light');
-      }
-      if (vaultDrawerElement) {
-        vaultDrawerElement.classList.remove('theme--dark');
-        vaultDrawerElement.classList.add('theme--light');
-      }
-      if (vaultStatusButton) {
-        vaultStatusButton.classList.remove('theme--dark');
-        vaultStatusButton.classList.add('theme--light');
       }
     }
   }
@@ -4680,38 +4704,69 @@
     }
   }
 
+  // Returns the SVG ready to insert, using the current colour and size
+  // preferences. Raw markup is cached, so changing preferences needs no refetch.
   async function getSvgContent(iconifyName) {
-    if (svgCache.has(iconifyName)) {
-      return svgCache.get(iconifyName);
-    }
-
     const [prefix, iconName] = iconifyName.split(':');
-    const url = `https://api.iconify.design/${encodeURIComponent(prefix)}/${encodeURIComponent(iconName)}.svg`;
-
-    try {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      let text = await response.text();
-      text = cleanSvg(text);
-      if (svgCache.size >= 256) svgCache.delete(svgCache.keys().next().value);
-      svgCache.set(iconifyName, text);
-      return text;
-    } catch (e) {
-      console.error(`[Excali Up] SVG fetch failed for ${iconifyName}:`, e);
-      return null;
+    let rawSvg = svgCache.get(iconifyName);
+    if (!rawSvg) {
+      const url = `https://api.iconify.design/${encodeURIComponent(prefix)}/${encodeURIComponent(iconName)}.svg`;
+      try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        rawSvg = await response.text();
+        if (svgCache.size >= 256) svgCache.delete(svgCache.keys().next().value);
+        svgCache.set(iconifyName, rawSvg);
+      } catch (e) {
+        console.error(`[Excali Up] SVG fetch failed for ${iconifyName}:`, e);
+        return null;
+      }
     }
+
+    const collection = iconCollections && iconCollections[prefix];
+    const isMulticolor = !!(collection && collection.palette);
+    const color = iconInsertPrefs.color === 'stroke' && !isMulticolor ? getCanvasStrokeColor() : null;
+    return cleanSvg(rawSvg, { color, size: iconInsertPrefs.size });
   }
 
-  function cleanSvg(svgText) {
+  function cleanSvg(svgText, { color = null, size = 96 } = {}) {
     svgText = svgText.replace(/<\?xml.*?\?>/gi, '');
     svgText = svgText.replace(/<!DOCTYPE.*?>/gi, '');
-    const cleanedSvg = svgText
+    let cleanedSvg = svgText
       .replace(/fill="#(000000|000|212121)"/gi, 'fill="currentColor"')
       .replace(/stroke="#(000000|000|212121)"/gi, 'stroke="currentColor"');
-    return Core.sizeSvgForCanvas(cleanedSvg, 96);
+    // Images on the canvas cannot inherit a colour, so bake it in.
+    if (color) cleanedSvg = cleanedSvg.replace(/currentColor/g, color);
+    return Core.sizeSvgForCanvas(cleanedSvg, size);
+  }
+
+  // Excalidraw turns pasted SVG markup into an image element. It only accepts
+  // a paste while focus is inside its container and not in a text field, so
+  // move focus there first; the event goes to the document like a real paste.
+  function pasteSvgIntoCanvas(svgContent) {
+    const container = document.querySelector('.excalidraw');
+    const active = document.activeElement;
+    const isTextField = active && (/^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName) || active.isContentEditable);
+    if (container && (!container.contains(active) || isTextField)) {
+      container.focus({ preventScroll: true });
+    }
+    const clipboardData = new DataTransfer();
+    clipboardData.setData('text/plain', svgContent);
+    document.dispatchEvent(new ClipboardEvent('paste', {
+      clipboardData,
+      bubbles: true,
+      cancelable: true
+    }));
   }
 
   function showToast(message) {
+    const api = currentApp && currentApp.api;
+    if (api && typeof api.setToast === 'function') {
+      try {
+        api.setToast({ message, duration: 2500, closable: false });
+        return;
+      } catch {}
+    }
     let toast = document.getElementById('excaligif-toast');
     if (!toast) {
       toast = document.createElement('div');
@@ -4731,28 +4786,67 @@
   // --- Local Vault & File Manager Engine ---
   // ==========================================
 
+  const VAULT_SAVE_DELAY = 1200;
+  const VAULT_RECENT_LIMIT = 10;
+  let vaultLastSavedAt = 0;
+  let vaultSavePromise = null;
+  let vaultSaveQueued = false;
+  let vaultOperationDepth = 0;
+  let vaultChangeUnsubscribe = null;
+  let vaultPollTimer = null;
+  let vaultLastChangeSignature = null;
+  let vaultStatusTimer = null;
+  let vaultListingRequestId = 0;
+  let vaultIsScanning = false;
+  let vaultDrawerReturnFocus = null;
+  let vaultButtonSignature = '';
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, (char) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;'
+    })[char]);
+  }
+
   function formatBytes(bytes) {
     if (!bytes || bytes === 0) return '0 B';
     const k = 1024;
-    const sizes = ['B', 'KB', 'MB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(k)));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   }
 
   function formatFileDate(timestamp) {
     if (!timestamp) return '';
-    const diffMs = Date.now() - timestamp;
-    const diffSec = Math.floor(diffMs / 1000);
+    const diffSec = Math.floor((Date.now() - timestamp) / 1000);
     const diffMin = Math.floor(diffSec / 60);
     const diffHour = Math.floor(diffMin / 60);
     const diffDay = Math.floor(diffHour / 24);
 
-    if (diffSec < 60) return 'Just now';
+    if (diffSec < 60) return 'just now';
     if (diffMin < 60) return `${diffMin}m ago`;
     if (diffHour < 24) return `${diffHour}h ago`;
     if (diffDay < 7) return `${diffDay}d ago`;
-    const d = new Date(timestamp);
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  function getDrawingDisplayName(relativePath) {
+    return String(relativePath || '').split('/').pop().replace(/\.excalidraw(?:\.json)?$/i, '');
+  }
+
+  function getParentFolder(relativePath) {
+    return String(relativePath || '').split('/').slice(0, -1).join('/');
+  }
+
+  function joinVaultPath(folder, name) {
+    return folder ? `${folder}/${name}` : name;
+  }
+
+  function isVaultPathInside(path, folderPath) {
+    return path === folderPath || path.startsWith(`${folderPath}/`);
   }
 
   function getSceneHash(elements, appState, files) {
@@ -4763,1105 +4857,1469 @@
     return `${elCount}:${versionSum}:${bgColor}:${fileKeys}`;
   }
 
+  function getCurrentScene() {
+    const api = currentApp && currentApp.api;
+    return {
+      elements: api ? api.getSceneElements() : [],
+      appState: (currentApp && currentApp.state) || {},
+      files: (api && api.getFiles && api.getFiles()) || (currentApp && currentApp.files) || {}
+    };
+  }
+
+  function getCurrentSceneHash() {
+    const scene = getCurrentScene();
+    return getSceneHash(scene.elements, scene.appState, scene.files);
+  }
+
+  function getSceneName() {
+    const api = currentApp && currentApp.api;
+    const name = (api && typeof api.getName === 'function' && api.getName()) ||
+      (currentApp && currentApp.state && currentApp.state.name);
+    return typeof name === 'string' && name.trim() ? name : 'Untitled';
+  }
+
+  function clearSceneHistory() {
+    const history = currentApp && currentApp.api && currentApp.api.history;
+    if (history && typeof history.clear === 'function') {
+      try {
+        history.clear();
+      } catch (error) {
+        console.warn('[Excali Up] Could not clear undo history:', error);
+      }
+    }
+  }
+
+  // Replaces the canvas without recording an undo step, so Undo can never bring
+  // back the previous drawing (which would then auto-save into the wrong file).
+  function replaceScene(elements, appState) {
+    currentApp.api.updateScene({
+      elements,
+      appState,
+      captureUpdate: 'NEVER',
+      commitToHistory: false
+    });
+    clearSceneHistory();
+    vaultLastChangeSignature = null;
+  }
+
+  function isVaultConnected() {
+    return !!rootVaultHandle && vaultSyncState !== 'unlinked' && vaultSyncState !== 'permission-required';
+  }
+
+  function vaultCanSave() {
+    return isVaultConnected() && !!(currentApp && currentApp.api);
+  }
+
   function setVaultSyncState(state) {
     vaultSyncState = state;
     updateVaultButtonState();
   }
 
-  function updateVaultButtonState() {
-    if (!vaultStatusButton) return;
-    vaultStatusButton.className = 'excaliup-vault-btn';
-    if (currentApp && currentApp.state && currentApp.state.theme === 'light') {
-      vaultStatusButton.classList.add('theme--light');
-    }
-
-    let iconHtml = '';
-    let label = '';
-    let tooltip = '';
-
+  function getVaultStatusInfo() {
+    const activeName = activeDrawingRelativePath ? getDrawingDisplayName(activeDrawingRelativePath) : '';
     switch (vaultSyncState) {
       case 'synced':
-        vaultStatusButton.classList.add('status--synced');
-        iconHtml = '<span class="status-dot"></span>';
-        label = activeDrawingRelativePath
-          ? activeDrawingRelativePath.split('/').pop().replace(/\.excalidraw$/, '')
-          : 'Synced';
-        tooltip = `Vault Synced (${activeDrawingRelativePath || 'Active drawing'}). Click to open manager.`;
-        break;
+        return {
+          tone: 'ok',
+          label: activeName || 'Saved',
+          detail: vaultLastSavedAt ? `Saved ${formatFileDate(vaultLastSavedAt)}` : 'All changes saved',
+          tooltip: activeDrawingRelativePath
+            ? `Saved to ${activeDrawingRelativePath}. Click to open the vault.`
+            : 'Vault connected. Click to open the vault.'
+        };
+      case 'pending':
+        return {
+          tone: 'pending',
+          label: activeName || 'Unsaved',
+          detail: 'Unsaved changes',
+          tooltip: 'Changes will be saved in a moment.'
+        };
       case 'saving':
-        vaultStatusButton.classList.add('status--saving');
-        iconHtml = '<span class="status-dot"></span>';
-        label = 'Saving...';
-        tooltip = 'Writing scene changes to local disk...';
-        break;
+        return {
+          tone: 'busy',
+          label: activeName || 'Saving…',
+          detail: 'Saving…',
+          tooltip: 'Writing changes to disk…'
+        };
       case 'permission-required':
-        vaultStatusButton.classList.add('status--permission');
-        iconHtml = '<iconify-icon icon="lucide:alert-circle" style="color: #f59e0b;"></iconify-icon>';
-        label = 'Reconnect Vault';
-        tooltip = 'Permission needed. Click to reconnect local folder.';
-        break;
+        return {
+          tone: 'warn',
+          label: 'Reconnect',
+          detail: 'Folder access needs to be granted again',
+          tooltip: 'Permission needed. Click to reconnect the vault folder.'
+        };
       case 'error':
-        vaultStatusButton.classList.add('status--error');
-        iconHtml = '<iconify-icon icon="lucide:alert-triangle" style="color: #ef4444;"></iconify-icon>';
-        label = 'Sync Error';
-        tooltip = 'Failed to save drawing. Click for details.';
-        break;
+        return {
+          tone: 'error',
+          label: 'Save failed',
+          detail: 'Could not write to disk',
+          tooltip: 'The last save failed. Open the vault to retry.'
+        };
       case 'unlinked':
       default:
-        vaultStatusButton.classList.add('status--unlinked');
-        iconHtml = '<iconify-icon icon="lucide:folder-plus"></iconify-icon>';
-        label = 'Excaliup-save';
-        tooltip = 'Click to choose a local folder to enable auto-save.';
-        break;
+        return {
+          tone: 'off',
+          label: 'Vault',
+          detail: 'Not connected',
+          tooltip: 'Connect a local folder to auto-save your drawings.'
+        };
+    }
+  }
+
+  function updateVaultButtonState() {
+    renderVaultStatusCard();
+    if (!vaultStatusButton) return;
+    const info = getVaultStatusInfo();
+    const signature = `${info.tone}|${info.label}|${info.tooltip}`;
+    if (signature === vaultButtonSignature) return;
+    vaultButtonSignature = signature;
+
+    vaultStatusButton.dataset.tone = info.tone;
+    vaultStatusButton.classList.toggle('is-open', isVaultDrawerOpen);
+    vaultStatusButton.innerHTML = `
+      <span class="excaliup-vault-btn-icon" aria-hidden="true">
+        <iconify-icon icon="lucide:hard-drive"></iconify-icon>
+        <span class="excaliup-vault-dot" data-tone="${info.tone}"></span>
+      </span>
+      <span class="excaliup-vault-btn-label">${escapeHtml(info.label)}</span>
+    `;
+    vaultStatusButton.setAttribute('title', info.tooltip);
+    vaultStatusButton.setAttribute('aria-label', `Local vault: ${info.label}. ${info.tooltip}`);
+  }
+
+  // --- Saving ---
+
+  async function resolveAutoSavePath() {
+    if (activeDrawingRelativePath) return activeDrawingRelativePath;
+    const cleanName = Core.sanitizeFileName(getSceneName(), 'Untitled');
+    const baseName = /\.excalidraw$/i.test(cleanName) ? cleanName : `${cleanName}.excalidraw`;
+    return Core.getUniqueDrawingPath(rootVaultHandle, joinVaultPath(currentVaultRelativePath, baseName));
+  }
+
+  // Writes the current scene to the active drawing. Never throws.
+  async function writeActiveDrawing(force = false) {
+    if (!vaultCanSave()) return;
+    const { elements, appState, files } = getCurrentScene();
+    const hash = getSceneHash(elements, appState, files);
+    if (!force && hash === lastSavedSceneHash) {
+      if (vaultSyncState === 'pending') setVaultSyncState('synced');
+      return;
+    }
+    // Do not create a file for an empty scene that was never saved.
+    if (!activeDrawingRelativePath && elements.length === 0) {
+      lastSavedSceneHash = hash;
+      setVaultSyncState('synced');
+      return;
     }
 
-    vaultStatusButton.innerHTML = `${iconHtml}<span class="label-text">${label}</span>`;
-    vaultStatusButton.setAttribute('title', tooltip);
+    setVaultSyncState('saving');
+    try {
+      const isNewFile = !activeDrawingRelativePath;
+      const targetPath = await resolveAutoSavePath();
+      const jsonContent = Core.serializeExcalidrawScene({ elements, appState, files });
+      await Core.writeDrawingFile(rootVaultHandle, targetPath, jsonContent);
+      activeDrawingRelativePath = targetPath;
+      lastSavedSceneHash = hash;
+      vaultLastSavedAt = Date.now();
+      if (isNewFile) {
+        vaultMetadata.lastOpenedFile = targetPath;
+        await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
+      }
+      setVaultSyncState(getCurrentSceneHash() === hash ? 'synced' : 'pending');
+      updateVaultListingEntry(targetPath, jsonContent.length);
+    } catch (err) {
+      console.error('[Excali Up] Vault auto-save failed:', err);
+      const hasPerm = await Core.verifyHandlePermission(rootVaultHandle, true);
+      setVaultSyncState(hasPerm ? 'error' : 'permission-required');
+    }
+  }
+
+  function saveVaultNow(force = false) {
+    if (autoSaveTimer) {
+      clearTimeout(autoSaveTimer);
+      autoSaveTimer = null;
+    }
+    if (!vaultCanSave()) return Promise.resolve();
+    if (vaultSavePromise || vaultOperationDepth > 0) {
+      vaultSaveQueued = true;
+      return vaultSavePromise || Promise.resolve();
+    }
+    vaultSavePromise = writeActiveDrawing(force).finally(() => {
+      vaultSavePromise = null;
+      if (vaultSaveQueued && vaultOperationDepth === 0) {
+        vaultSaveQueued = false;
+        scheduleVaultAutoSave();
+      }
+    });
+    return vaultSavePromise;
   }
 
   function scheduleVaultAutoSave(immediate = false) {
-    if (!rootVaultHandle || vaultSyncState === 'unlinked' || vaultSyncState === 'permission-required') {
+    if (!vaultCanSave()) return Promise.resolve();
+    if (immediate) return saveVaultNow(true);
+    if (autoSaveTimer) clearTimeout(autoSaveTimer);
+    if (vaultSyncState === 'synced') setVaultSyncState('pending');
+    autoSaveTimer = setTimeout(() => {
+      autoSaveTimer = null;
+      saveVaultNow(false);
+    }, VAULT_SAVE_DELAY);
+    return Promise.resolve();
+  }
+
+  // Runs a file operation while auto-save is paused. Pending changes of the
+  // current drawing are written first so nothing is lost when switching files.
+  async function withVaultLock(task, { flush = false } = {}) {
+    vaultOperationDepth++;
+    try {
+      if (autoSaveTimer) {
+        clearTimeout(autoSaveTimer);
+        autoSaveTimer = null;
+        vaultSaveQueued = true;
+      }
+      if (vaultSavePromise) await vaultSavePromise;
+      if (flush) {
+        await writeActiveDrawing(false);
+        vaultSaveQueued = false;
+      }
+      return await task();
+    } finally {
+      vaultOperationDepth--;
+      if (vaultOperationDepth === 0 && vaultSaveQueued) {
+        vaultSaveQueued = false;
+        scheduleVaultAutoSave();
+      }
+    }
+  }
+
+  function flushVaultOnExit() {
+    if (vaultCanSave() && (autoSaveTimer || vaultSyncState === 'pending')) saveVaultNow(false);
+  }
+
+  function onVaultSceneChange(elements, appState, files) {
+    if (!vaultCanSave()) return;
+    // onChange also fires for scrolling and selection; skip those cheaply.
+    const signature = `${elements && elements.length}|${appState && appState.viewBackgroundColor}|${files ? Object.keys(files).length : 0}`;
+    if (vaultLastChangeSignature && elements === vaultLastChangeSignature.elements && signature === vaultLastChangeSignature.value) {
       return;
     }
-    if (autoSaveTimer) clearTimeout(autoSaveTimer);
+    vaultLastChangeSignature = { elements, value: signature };
+    if (getCurrentSceneHash() !== lastSavedSceneHash) scheduleVaultAutoSave();
+  }
 
-    const performSave = async () => {
-      autoSaveTimer = null;
-      if (!currentApp || !currentApp.api || !rootVaultHandle) return;
+  function attachVaultChangeListener() {
+    detachVaultChangeListener();
+    const api = currentApp && currentApp.api;
+    if (api && typeof api.onChange === 'function') {
+      const unsubscribe = api.onChange(onVaultSceneChange);
+      vaultChangeUnsubscribe = typeof unsubscribe === 'function' ? unsubscribe : null;
+      return;
+    }
+    vaultPollTimer = setInterval(() => {
+      if (document.hidden || !currentApp) return;
+      const scene = getCurrentScene();
+      onVaultSceneChange(scene.elements, scene.appState, scene.files);
+    }, 1000);
+  }
 
-      if (!activeDrawingRelativePath) {
-        const docName = (currentApp.state && currentApp.state.name) || 'Untitled';
-        const cleanName = Core.sanitizeFileName(docName, 'Untitled');
-        const baseName = cleanName.endsWith('.excalidraw') ? cleanName : `${cleanName}.excalidraw`;
-        activeDrawingRelativePath = currentVaultRelativePath ? `${currentVaultRelativePath}/${baseName}` : baseName;
-      }
-
-      const elements = currentApp.api.getSceneElements();
-      const appState = currentApp.state || {};
-      const files = (currentApp.api.getFiles && currentApp.api.getFiles()) || currentApp.files || {};
-
-      const currentHash = getSceneHash(elements, appState, files);
-      if (currentHash === lastSavedSceneHash && !immediate) {
-        setVaultSyncState('synced');
-        return;
-      }
-
-      setVaultSyncState('saving');
+  function detachVaultChangeListener() {
+    if (vaultChangeUnsubscribe) {
       try {
-        const jsonContent = Core.serializeExcalidrawScene({ elements, appState, files });
-        await Core.writeDrawingFile(rootVaultHandle, activeDrawingRelativePath, jsonContent);
-        lastSavedSceneHash = currentHash;
-        setVaultSyncState('synced');
-        if (isVaultDrawerOpen) {
-          refreshVaultListing(false);
-        }
-      } catch (err) {
-        console.error('[Excali Up] Vault auto-save failed:', err);
-        const hasPerm = await Core.verifyHandlePermission(rootVaultHandle, true);
-        if (!hasPerm) {
-          setVaultSyncState('permission-required');
-        } else {
-          setVaultSyncState('error');
-        }
-      }
-    };
+        vaultChangeUnsubscribe();
+      } catch {}
+      vaultChangeUnsubscribe = null;
+    }
+    if (vaultPollTimer) {
+      clearInterval(vaultPollTimer);
+      vaultPollTimer = null;
+    }
+    vaultLastChangeSignature = null;
+  }
 
-    if (immediate) {
-      performSave();
-    } else {
-      autoSaveTimer = setTimeout(performSave, 1200);
+  // --- Connection ---
+
+  async function waitForSceneHydration(timeoutMs = 2000) {
+    const startedAt = Date.now();
+    while (
+      currentApp &&
+      currentApp.api &&
+      currentApp.api.getSceneElements().length === 0 &&
+      Date.now() - startedAt < timeoutMs
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+
+  // After a reload Excalidraw restores its own copy of the scene. Link it back
+  // to the drawing it was saved from, but only when the scene is clearly the
+  // same drawing (shared element ids), so another scene can never overwrite it.
+  function restoreActiveDrawing() {
+    // Auto-save stays paused until we know which file the scene belongs to.
+    return withVaultLock(restoreActiveDrawingUnlocked);
+  }
+
+  async function restoreActiveDrawingUnlocked() {
+    activeDrawingRelativePath = null;
+    lastSavedSceneHash = '';
+    const lastPath = vaultMetadata.lastOpenedFile;
+    if (!lastPath || !currentApp || !currentApp.api) return;
+
+    try {
+      await waitForSceneHydration();
+      const scene = Core.parseExcalidrawScene(await Core.readDrawingFile(rootVaultHandle, lastPath));
+      if (!scene) return;
+      const current = getCurrentScene();
+      const currentIds = new Set(current.elements.map((element) => element.id));
+      const fileElements = scene.elements.filter((element) => element && !element.isDeleted);
+      const sameDrawing = fileElements.length === 0 || fileElements.some((element) => currentIds.has(element.id));
+      if (!sameDrawing) return;
+
+      activeDrawingRelativePath = Core.normalizeVaultPath(lastPath);
+      const fileHash = getSceneHash(fileElements, scene.appState, scene.files);
+      const currentHash = getSceneHash(current.elements, current.appState, current.files);
+      lastSavedSceneHash = fileHash === currentHash ? currentHash : '';
+      if (!lastSavedSceneHash && current.elements.length > 0) scheduleVaultAutoSave();
+    } catch {
+      // The last drawing was moved or deleted outside the extension.
     }
   }
 
   async function connectLocalVaultFolder() {
+    if (typeof window.showDirectoryPicker !== 'function') {
+      showToast('This browser cannot access local folders.');
+      return;
+    }
+
+    let handle;
     try {
-      if (typeof window.showDirectoryPicker !== 'function') {
-        showToast('File System Access API is not supported in this browser.');
-        return;
-      }
-      const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
-      if (!handle) return;
-
-      await Core.setStoredVaultHandle(handle);
-      rootVaultHandle = handle;
-      vaultMetadata = await Core.readVaultMetadata(handle);
-      currentVaultRelativePath = '';
-
-      const folderNameSpan = document.getElementById('excaliup-vault-folder-name');
-      if (folderNameSpan) folderNameSpan.textContent = handle.name;
-
-      if (currentApp && currentApp.api) {
-        const elements = currentApp.api.getSceneElements();
-        const appState = currentApp.state || {};
-        const files = (currentApp.api.getFiles && currentApp.api.getFiles()) || currentApp.files || {};
-        const currentHash = getSceneHash(elements, appState, files);
-        if (elements.length > 0) {
-          await scheduleVaultAutoSave(true);
-        } else {
-          lastSavedSceneHash = currentHash;
-          setVaultSyncState('synced');
-        }
-      } else {
-        setVaultSyncState('synced');
-      }
-
-      await refreshVaultListing(true);
-      showToast(`Connected vault: ${handle.name}`);
+      handle = await window.showDirectoryPicker({ id: 'excaliup-vault', mode: 'readwrite' });
     } catch (err) {
       if (err.name !== 'AbortError') {
         console.error('[Excali Up] Connect vault failed:', err);
-        showToast('Failed to connect folder');
+        showToast('Could not open that folder');
       }
+      return;
+    }
+    if (!handle) return;
+
+    try {
+      await withVaultLock(async () => {
+        await Core.setStoredVaultHandle(handle);
+        rootVaultHandle = handle;
+        vaultMetadata = await Core.readVaultMetadata(handle);
+        currentVaultRelativePath = '';
+        vaultSearchQuery = '';
+        activeDrawingRelativePath = null;
+        lastSavedSceneHash = '';
+        vaultLastSavedAt = 0;
+        setVaultSyncState('synced');
+      }, { flush: true });
+      await saveVaultNow(false);
+      await refreshVaultListing(true);
+      showToast(`Connected to “${handle.name}”`);
+    } catch (err) {
+      console.error('[Excali Up] Connect vault failed:', err);
+      showToast('Could not connect that folder');
     }
   }
+
+  async function requestVaultPermission() {
+    if (!rootVaultHandle) return connectLocalVaultFolder();
+    const granted = await Core.requestHandlePermission(rootVaultHandle, true);
+    if (!granted) {
+      showToast('Folder access was not granted');
+      return;
+    }
+    vaultMetadata = await Core.readVaultMetadata(rootVaultHandle);
+    setVaultSyncState('synced');
+    await restoreActiveDrawing();
+    await refreshVaultListing(true);
+  }
+
+  // --- File operations ---
 
   async function openVaultDrawing(relativePath) {
-    if (!rootVaultHandle || !relativePath) return;
+    if (!rootVaultHandle || !relativePath || !currentApp || !currentApp.api) return;
+    if (relativePath === activeDrawingRelativePath) {
+      closeVaultDrawer();
+      return;
+    }
 
     try {
-      if (activeDrawingRelativePath && autoSaveTimer) {
-        await scheduleVaultAutoSave(true);
-      }
+      const opened = await withVaultLock(async () => {
+        const scene = Core.parseExcalidrawScene(await Core.readDrawingFile(rootVaultHandle, relativePath));
+        if (!scene) return false;
 
-      showToast('Opening drawing...');
-      const fileText = await Core.readDrawingFile(rootVaultHandle, relativePath);
-      const sceneData = Core.parseExcalidrawScene(fileText);
+        const name = getDrawingDisplayName(relativePath);
+        const appState = { name };
+        if (typeof scene.appState.viewBackgroundColor === 'string') {
+          appState.viewBackgroundColor = scene.appState.viewBackgroundColor;
+        }
+        const files = Object.values(scene.files || {}).filter((file) => file && file.id && file.dataURL);
+        if (files.length && typeof currentApp.api.addFiles === 'function') currentApp.api.addFiles(files);
+        replaceScene(scene.elements, appState);
 
-      if (!sceneData || !currentApp || !currentApp.api) {
-        showToast('Invalid or empty Excalidraw file');
+        activeDrawingRelativePath = Core.normalizeVaultPath(relativePath);
+        lastSavedSceneHash = getCurrentSceneHash();
+        vaultLastSavedAt = 0;
+        if (typeof currentApp.scrollToContent === 'function' && scene.elements.length) {
+          try {
+            currentApp.scrollToContent(undefined, { fitToContent: true });
+          } catch {}
+        }
+        vaultMetadata.lastOpenedFile = activeDrawingRelativePath;
+        await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
+        setVaultSyncState('synced');
+        return true;
+      }, { flush: true });
+
+      if (!opened) {
+        showToast('That file is not a valid Excalidraw drawing');
         return;
       }
-
-      currentApp.api.updateScene({
-        elements: sceneData.elements,
-        appState: {
-          ...(sceneData.appState || {}),
-          collaborators: currentApp.state.collaborators
-        },
-        commitToHistory: true
-      });
-
-      if (sceneData.files && currentApp.api.addFiles) {
-        currentApp.api.addFiles(Object.values(sceneData.files));
-      }
-
-      activeDrawingRelativePath = relativePath;
-      lastSavedSceneHash = getSceneHash(sceneData.elements, currentApp.state, sceneData.files);
-
-      const fileName = relativePath.split('/').pop().replace(/\.excalidraw$/, '');
-      if (currentApp.state) {
-        currentApp.state.name = fileName;
-      }
-      const titleInput = document.querySelector('.dropdown-menu-container input, .excalidraw-title');
-      if (titleInput && 'value' in titleInput) {
-        titleInput.value = fileName;
-      }
-
-      vaultMetadata.lastOpenedFile = relativePath;
-      await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
-
-      setVaultSyncState('synced');
-      refreshVaultListing(true);
-      showToast(`Opened ${fileName}`);
+      renderVaultItems();
+      showToast(`Opened “${getDrawingDisplayName(relativePath)}”`);
     } catch (err) {
       console.error('[Excali Up] Failed to open drawing:', err);
-      showToast('Failed to open drawing');
+      showToast('Could not open that drawing');
+      refreshVaultListing(true);
     }
   }
 
-  // --- Modal & Popover Helpers ---
-  let activeVaultModal = null;
-  let activeVaultPopover = null;
-
-  function closeActiveVaultPopover() {
-    if (activeVaultPopover) {
-      activeVaultPopover.remove();
-      activeVaultPopover = null;
-    }
+  function getDrawingFileName(name) {
+    const cleanName = Core.sanitizeFileName(name, '');
+    if (!cleanName) return '';
+    return /\.excalidraw$/i.test(cleanName) ? cleanName : `${cleanName}.excalidraw`;
   }
 
-  document.addEventListener('click', (e) => {
-    if (activeVaultPopover && !e.target.closest('.excaliup-vault-popover') && !e.target.closest('.excaliup-vault-item-menu-btn')) {
-      closeActiveVaultPopover();
-    }
-  });
-
-  function showVaultActionPopover(anchorElement, file) {
-    closeActiveVaultPopover();
-    const excalidraw = document.querySelector('.excalidraw') || document.body;
-    const rect = anchorElement.getBoundingClientRect();
-
-    const popover = document.createElement('div');
-    popover.className = 'excaliup-vault-popover';
-    if (currentApp && currentApp.state && currentApp.state.theme === 'light') {
-      popover.classList.add('theme--light');
-    }
-
-    popover.innerHTML = `
-      <button class="excaliup-vault-popover-item" id="popover-rename">
-        <iconify-icon icon="lucide:pencil"></iconify-icon> <span>Rename</span>
-      </button>
-      <button class="excaliup-vault-popover-item" id="popover-move">
-        <iconify-icon icon="lucide:folder-input"></iconify-icon> <span>Move to...</span>
-      </button>
-      <button class="excaliup-vault-popover-item" id="popover-duplicate">
-        <iconify-icon icon="lucide:copy"></iconify-icon> <span>Duplicate</span>
-      </button>
-      <button class="excaliup-vault-popover-item danger" id="popover-delete">
-        <iconify-icon icon="lucide:trash-2"></iconify-icon> <span>Delete</span>
-      </button>
-    `;
-
-    popover.style.top = `${rect.bottom + 4}px`;
-    popover.style.left = `${Math.min(rect.left - 100, window.innerWidth - 160)}px`;
-
-    popover.querySelector('#popover-rename').addEventListener('click', (e) => {
-      e.stopPropagation();
-      closeActiveVaultPopover();
-      renameVaultDrawing(file.path);
-    });
-
-    popover.querySelector('#popover-move').addEventListener('click', (e) => {
-      e.stopPropagation();
-      closeActiveVaultPopover();
-      showVaultMoveModal(file.path);
-    });
-
-    popover.querySelector('#popover-duplicate').addEventListener('click', (e) => {
-      e.stopPropagation();
-      closeActiveVaultPopover();
-      duplicateVaultDrawing(file.path);
-    });
-
-    popover.querySelector('#popover-delete').addEventListener('click', (e) => {
-      e.stopPropagation();
-      closeActiveVaultPopover();
-      deleteVaultDrawing(file.path);
-    });
-
-    excalidraw.appendChild(popover);
-    activeVaultPopover = popover;
-  }
-
-  function showVaultPromptModal({ title, description, placeholder = '', initialValue = '', confirmText = 'Confirm', isDanger = false, onConfirm }) {
-    if (activeVaultModal) {
-      activeVaultModal.remove();
-      activeVaultModal = null;
-    }
-
-    const excalidraw = document.querySelector('.excalidraw') || document.body;
-    const overlay = document.createElement('div');
-    overlay.className = 'excaliup-vault-modal-overlay';
-
-    const isLight = currentApp && currentApp.state && currentApp.state.theme === 'light';
-
-    overlay.innerHTML = `
-      <div class="excaliup-vault-modal ${isLight ? 'theme--light' : ''}">
-        <div class="excaliup-vault-modal-header">
-          <div class="excaliup-vault-modal-icon ${isDanger ? 'danger' : ''}">
-            <iconify-icon icon="${isDanger ? 'lucide:alert-triangle' : 'lucide:file-edit'}"></iconify-icon>
-          </div>
-          <div>
-            <div class="excaliup-vault-modal-title">${title}</div>
-            ${description ? `<div class="excaliup-vault-modal-desc">${description}</div>` : ''}
-          </div>
-        </div>
-        <input type="text" class="excaliup-vault-modal-input" placeholder="${placeholder}" value="${initialValue.replace(/"/g, '&quot;')}" />
-        <div class="excaliup-vault-modal-actions">
-          <button class="excaliup-vault-modal-btn secondary" id="modal-cancel">Cancel</button>
-          <button class="excaliup-vault-modal-btn ${isDanger ? 'danger' : 'primary'}" id="modal-confirm">${confirmText}</button>
-        </div>
-      </div>
-    `;
-
-    const input = overlay.querySelector('.excaliup-vault-modal-input');
-    const cancelBtn = overlay.querySelector('#modal-cancel');
-    const confirmBtn = overlay.querySelector('#modal-confirm');
-
-    const closeModal = () => {
-      overlay.remove();
-      if (activeVaultModal === overlay) activeVaultModal = null;
-    };
-
-    const handleConfirm = () => {
-      const val = input.value.trim();
-      if (val) {
-        closeModal();
-        onConfirm(val);
-      } else {
-        input.focus();
-      }
-    };
-
-    cancelBtn.addEventListener('click', closeModal);
-    confirmBtn.addEventListener('click', handleConfirm);
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) closeModal();
-    });
-
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        handleConfirm();
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        closeModal();
-      }
-    });
-
-    excalidraw.appendChild(overlay);
-    activeVaultModal = overlay;
-    setTimeout(() => {
-      input.focus();
-      input.select();
-    }, 50);
-  }
-
-  function showVaultNewDrawingModal({ defaultName, folders = [], initialFolder = '', onConfirm }) {
-    if (activeVaultModal) {
-      activeVaultModal.remove();
-      activeVaultModal = null;
-    }
-
-    const excalidraw = document.querySelector('.excalidraw') || document.body;
-    const overlay = document.createElement('div');
-    overlay.className = 'excaliup-vault-modal-overlay';
-
-    const isLight = currentApp && currentApp.state && currentApp.state.theme === 'light';
-
-    let folderOptionsHtml = `<option value="">📁 / (Vault Root)</option>`;
-    for (const f of folders) {
-      const indent = '&nbsp;&nbsp;'.repeat(f.depth + 1);
-      const isSelected = f.path === initialFolder ? 'selected' : '';
-      folderOptionsHtml += `<option value="${f.path}" ${isSelected}>${indent}📁 /${f.path}</option>`;
-    }
-
-    overlay.innerHTML = `
-      <div class="excaliup-vault-modal ${isLight ? 'theme--light' : ''}">
-        <div class="excaliup-vault-modal-header">
-          <div class="excaliup-vault-modal-icon">
-            <iconify-icon icon="lucide:file-plus-2"></iconify-icon>
-          </div>
-          <div>
-            <div class="excaliup-vault-modal-title">New Drawing</div>
-            <div class="excaliup-vault-modal-desc">Enter drawing name and choose folder:</div>
-          </div>
-        </div>
-
-        <div class="excaliup-vault-modal-label">Drawing Name</div>
-        <input type="text" class="excaliup-vault-modal-input" id="new-drawing-name" placeholder="Drawing name..." value="${defaultName.replace(/"/g, '&quot;')}" />
-
-        <div class="excaliup-vault-modal-label">Save In Folder</div>
-        <select class="excaliup-vault-modal-select" id="new-drawing-folder">
-          ${folderOptionsHtml}
-        </select>
-
-        <div class="excaliup-vault-modal-actions">
-          <button class="excaliup-vault-modal-btn secondary" id="modal-cancel">Cancel</button>
-          <button class="excaliup-vault-modal-btn primary" id="modal-confirm">Create Drawing</button>
-        </div>
-      </div>
-    `;
-
-    const nameInput = overlay.querySelector('#new-drawing-name');
-    const folderSelect = overlay.querySelector('#new-drawing-folder');
-    const cancelBtn = overlay.querySelector('#modal-cancel');
-    const confirmBtn = overlay.querySelector('#modal-confirm');
-
-    const closeModal = () => {
-      overlay.remove();
-      if (activeVaultModal === overlay) activeVaultModal = null;
-    };
-
-    const handleConfirm = () => {
-      const val = nameInput.value.trim();
-      if (val) {
-        const selFolder = folderSelect.value || '';
-        closeModal();
-        onConfirm(val, selFolder);
-      } else {
-        nameInput.focus();
-      }
-    };
-
-    cancelBtn.addEventListener('click', closeModal);
-    confirmBtn.addEventListener('click', handleConfirm);
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) closeModal();
-    });
-
-    nameInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        handleConfirm();
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        closeModal();
-      }
-    });
-
-    excalidraw.appendChild(overlay);
-    activeVaultModal = overlay;
-    setTimeout(() => {
-      nameInput.focus();
-      nameInput.select();
-    }, 50);
-  }
-
-  async function showVaultMoveModal(drawingPath) {
-    if (!rootVaultHandle || !drawingPath) return;
-    if (activeVaultModal) {
-      activeVaultModal.remove();
-      activeVaultModal = null;
-    }
-
+  async function getFolderOptions(selectedPath) {
     const folders = await Core.scanAllVaultFolders(rootVaultHandle, '');
-    const currentFolder = drawingPath.split('/').slice(0, -1).join('/');
-    const fileName = drawingPath.split('/').pop().replace(/\.excalidraw$/, '');
-
-    const excalidraw = document.querySelector('.excalidraw') || document.body;
-    const overlay = document.createElement('div');
-    overlay.className = 'excaliup-vault-modal-overlay';
-    const isLight = currentApp && currentApp.state && currentApp.state.theme === 'light';
-
-    let folderOptionsHtml = `<option value="" ${currentFolder === '' ? 'selected' : ''}>📁 / (Vault Root)</option>`;
-    for (const f of folders) {
-      const indent = '&nbsp;&nbsp;'.repeat(f.depth + 1);
-      const isSelected = f.path === currentFolder ? 'selected' : '';
-      folderOptionsHtml += `<option value="${f.path}" ${isSelected}>${indent}📁 /${f.path}</option>`;
-    }
-
-    overlay.innerHTML = `
-      <div class="excaliup-vault-modal ${isLight ? 'theme--light' : ''}">
-        <div class="excaliup-vault-modal-header">
-          <div class="excaliup-vault-modal-icon">
-            <iconify-icon icon="lucide:folder-input"></iconify-icon>
-          </div>
-          <div>
-            <div class="excaliup-vault-modal-title">Move Drawing</div>
-            <div class="excaliup-vault-modal-desc">Select destination folder for "${fileName}":</div>
-          </div>
-        </div>
-
-        <div class="excaliup-vault-modal-label">Destination Folder</div>
-        <select class="excaliup-vault-modal-select" id="move-drawing-folder">
-          ${folderOptionsHtml}
-        </select>
-
-        <div class="excaliup-vault-modal-actions">
-          <button class="excaliup-vault-modal-btn secondary" id="modal-cancel">Cancel</button>
-          <button class="excaliup-vault-modal-btn primary" id="modal-confirm">Move Drawing</button>
-        </div>
-      </div>
-    `;
-
-    const folderSelect = overlay.querySelector('#move-drawing-folder');
-    const cancelBtn = overlay.querySelector('#modal-cancel');
-    const confirmBtn = overlay.querySelector('#modal-confirm');
-
-    const closeModal = () => {
-      overlay.remove();
-      if (activeVaultModal === overlay) activeVaultModal = null;
-    };
-
-    const handleConfirm = () => {
-      const targetFolder = folderSelect.value || '';
-      closeModal();
-      moveVaultDrawing(drawingPath, targetFolder);
-    };
-
-    cancelBtn.addEventListener('click', closeModal);
-    confirmBtn.addEventListener('click', handleConfirm);
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) closeModal();
-    });
-
-    excalidraw.appendChild(overlay);
-    activeVaultModal = overlay;
-  }
-
-  function showVaultConfirmModal({ title, message, confirmText = 'Delete', isDanger = true, onConfirm }) {
-    if (activeVaultModal) {
-      activeVaultModal.remove();
-      activeVaultModal = null;
-    }
-
-    const excalidraw = document.querySelector('.excalidraw') || document.body;
-    const overlay = document.createElement('div');
-    overlay.className = 'excaliup-vault-modal-overlay';
-
-    const isLight = currentApp && currentApp.state && currentApp.state.theme === 'light';
-
-    overlay.innerHTML = `
-      <div class="excaliup-vault-modal ${isLight ? 'theme--light' : ''}">
-        <div class="excaliup-vault-modal-header">
-          <div class="excaliup-vault-modal-icon ${isDanger ? 'danger' : ''}">
-            <iconify-icon icon="${isDanger ? 'lucide:trash-2' : 'lucide:help-circle'}"></iconify-icon>
-          </div>
-          <div>
-            <div class="excaliup-vault-modal-title">${title}</div>
-            <div class="excaliup-vault-modal-desc">${message}</div>
-          </div>
-        </div>
-        <div class="excaliup-vault-modal-actions">
-          <button class="excaliup-vault-modal-btn secondary" id="modal-cancel">Cancel</button>
-          <button class="excaliup-vault-modal-btn ${isDanger ? 'danger' : 'primary'}" id="modal-confirm">${confirmText}</button>
-        </div>
-      </div>
-    `;
-
-    const cancelBtn = overlay.querySelector('#modal-cancel');
-    const confirmBtn = overlay.querySelector('#modal-confirm');
-
-    const closeModal = () => {
-      overlay.remove();
-      if (activeVaultModal === overlay) activeVaultModal = null;
-    };
-
-    cancelBtn.addEventListener('click', closeModal);
-    confirmBtn.addEventListener('click', () => {
-      closeModal();
-      onConfirm();
-    });
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) closeModal();
-    });
-
-    document.addEventListener('keydown', function escHandler(e) {
-      if (e.key === 'Escape') {
-        closeModal();
-        document.removeEventListener('keydown', escHandler);
-      }
-    }, { once: true });
-
-    excalidraw.appendChild(overlay);
-    activeVaultModal = overlay;
-  }
-
-  async function duplicateVaultDrawing(relativePath) {
-    if (!rootVaultHandle || !relativePath) return;
-    const oldFileName = relativePath.split('/').pop().replace(/\.excalidraw$/, '');
-    const newName = `${oldFileName} (Copy)`;
-    const cleanFileName = `${Core.sanitizeFileName(newName, 'Copy')}.excalidraw`;
-
-    const segments = relativePath.split('/');
-    segments.pop();
-    const newRelativePath = segments.length > 0 ? `${segments.join('/')}/${cleanFileName}` : cleanFileName;
-
-    try {
-      const content = await Core.readDrawingFile(rootVaultHandle, relativePath);
-      await Core.writeDrawingFile(rootVaultHandle, newRelativePath, content);
-      await refreshVaultListing(true);
-      showToast(`Duplicated to ${cleanFileName}`);
-    } catch (err) {
-      console.error('[Excali Up] Duplicate failed:', err);
-      showToast('Failed to duplicate drawing');
-    }
-  }
-
-  async function moveVaultDrawing(sourceRelativePath, targetRelativeFolderPath) {
-    if (!rootVaultHandle || !sourceRelativePath) return;
-
-    try {
-      const result = await Core.moveDrawingFile(rootVaultHandle, sourceRelativePath, targetRelativeFolderPath);
-      if (!result) return;
-
-      if (result.moved) {
-        if (vaultMetadata.favorites && vaultMetadata.favorites.includes(sourceRelativePath)) {
-          vaultMetadata.favorites = vaultMetadata.favorites.map(f => f === sourceRelativePath ? result.newRelativePath : f);
-        }
-        if (activeDrawingRelativePath === sourceRelativePath) {
-          activeDrawingRelativePath = result.newRelativePath;
-        }
-        if (vaultMetadata.lastOpenedFile === sourceRelativePath) {
-          vaultMetadata.lastOpenedFile = result.newRelativePath;
-        }
-        await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
-        await refreshVaultListing(true);
-
-        const destName = targetRelativeFolderPath ? targetRelativeFolderPath : 'Vault Root';
-        showToast(`Moved to ${destName}`);
-      } else {
-        showToast('Drawing is already in this folder');
-      }
-    } catch (err) {
-      console.error('[Excali Up] Failed to move drawing:', err);
-      showToast('Failed to move drawing');
-    }
-  }
-
-  async function deleteVaultFolderWithConfirm(folderPath, folderName) {
-    if (!rootVaultHandle || !folderPath) return;
-
-    showVaultConfirmModal({
-      title: 'Delete Folder',
-      message: `Are you sure you want to delete "${folderName}" and all drawings inside it? This will permanently delete the folder and its contents from your disk.`,
-      confirmText: 'Delete Folder',
-      isDanger: true,
-      onConfirm: async () => {
-        try {
-          await Core.deleteVaultFolder(rootVaultHandle, folderPath, true);
-
-          // Clean up favorites that were inside deleted folder
-          vaultMetadata.favorites = (vaultMetadata.favorites || []).filter(
-            f => f !== folderPath && !f.startsWith(`${folderPath}/`)
-          );
-
-          if (activeDrawingRelativePath && (activeDrawingRelativePath === folderPath || activeDrawingRelativePath.startsWith(`${folderPath}/`))) {
-            activeDrawingRelativePath = null;
-          }
-
-          if (currentVaultRelativePath === folderPath || currentVaultRelativePath.startsWith(`${folderPath}/`)) {
-            const parentSegments = folderPath.split('/').slice(0, -1);
-            currentVaultRelativePath = parentSegments.join('/');
-          }
-
-          await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
-          await refreshVaultListing(true);
-          showToast(`Deleted folder ${folderName}`);
-        } catch (err) {
-          console.error('[Excali Up] Delete folder failed:', err);
-          showToast('Failed to delete folder');
-        }
-      }
-    });
+    return [
+      { value: '', label: 'Vault root', selected: selectedPath === '' },
+      ...folders.map((folder) => ({
+        value: folder.path,
+        label: `${'   '.repeat(folder.depth + 1)}${folder.name}`,
+        selected: folder.path === selectedPath
+      }))
+    ];
   }
 
   async function createNewVaultDrawing() {
-    if (!rootVaultHandle) {
+    if (!isVaultConnected()) {
       await connectLocalVaultFolder();
-      if (!rootVaultHandle) return;
+      if (!isVaultConnected()) return;
     }
 
-    const defaultName = `Drawing-${new Date().toISOString().slice(0, 10)}-${Date.now().toString().slice(-4)}`;
-    const allFolders = await Core.scanAllVaultFolders(rootVaultHandle, '');
+    const defaultName = `Drawing ${new Date().toISOString().slice(0, 10)}`;
+    const defaultPath = await Core.getUniqueDrawingPath(
+      rootVaultHandle,
+      joinVaultPath(currentVaultRelativePath, `${defaultName}.excalidraw`)
+    );
+    const folderOptions = await getFolderOptions(currentVaultRelativePath);
 
-    showVaultNewDrawingModal({
-      defaultName,
-      folders: allFolders,
-      initialFolder: currentVaultRelativePath,
-      onConfirm: async (inputName, targetFolder) => {
-        const cleanName = Core.sanitizeFileName(inputName, defaultName);
-        const fileName = cleanName.endsWith('.excalidraw') ? cleanName : `${cleanName}.excalidraw`;
-        const targetPath = targetFolder ? `${targetFolder}/${fileName}` : fileName;
-
+    openVaultModal({
+      icon: 'lucide:file-plus-2',
+      title: 'New drawing',
+      description: 'Your current drawing is saved first. The canvas then starts empty.',
+      fields: [
+        { id: 'name', label: 'Name', value: getDrawingDisplayName(defaultPath), placeholder: 'Drawing name' },
+        { id: 'folder', label: 'Folder', type: 'select', options: folderOptions }
+      ],
+      confirmText: 'Create drawing',
+      validate: async ({ name, folder }) => {
+        const fileName = getDrawingFileName(name);
+        if (!fileName) return 'Enter a name for the drawing.';
+        if (await Core.drawingFileExists(rootVaultHandle, joinVaultPath(folder, fileName))) {
+          return 'A drawing with this name already exists in that folder.';
+        }
+        return '';
+      },
+      onConfirm: async ({ name, folder }) => {
+        const fileName = getDrawingFileName(name);
+        const targetPath = joinVaultPath(folder, fileName);
+        const displayName = getDrawingDisplayName(fileName);
         try {
-          if (activeDrawingRelativePath && autoSaveTimer) {
-            await scheduleVaultAutoSave(true);
-          }
-
-          if (currentApp && currentApp.api) {
-            if (typeof currentApp.api.resetScene === 'function') {
-              currentApp.api.resetScene();
-            } else {
-              currentApp.api.updateScene({ elements: [], commitToHistory: true });
-            }
-            if (currentApp.state) {
-              currentApp.state.name = cleanName;
-            }
-          }
-
-          activeDrawingRelativePath = targetPath;
-          const initialSceneJson = Core.serializeExcalidrawScene({
-            elements: [],
-            appState: { name: cleanName, viewBackgroundColor: '#ffffff' },
-            files: {}
-          });
-          await Core.writeDrawingFile(rootVaultHandle, targetPath, initialSceneJson);
-          lastSavedSceneHash = getSceneHash([], currentApp.state, {});
-
-          vaultMetadata.lastOpenedFile = targetPath;
-          await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
-
-          setVaultSyncState('synced');
-          if (currentVaultRelativePath !== targetFolder) {
-            currentVaultRelativePath = targetFolder;
-          }
-          refreshVaultListing(true);
-          showToast(`Created ${fileName}`);
+          await withVaultLock(async () => {
+            const background = (currentApp.state && currentApp.state.viewBackgroundColor) || '#ffffff';
+            await Core.writeDrawingFile(rootVaultHandle, targetPath, Core.serializeExcalidrawScene({
+              elements: [],
+              appState: { name: displayName, viewBackgroundColor: background },
+              files: {}
+            }));
+            replaceScene([], { name: displayName });
+            activeDrawingRelativePath = targetPath;
+            lastSavedSceneHash = getCurrentSceneHash();
+            vaultLastSavedAt = Date.now();
+            vaultMetadata.lastOpenedFile = targetPath;
+            await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
+            currentVaultRelativePath = folder;
+            vaultCurrentView = 'all';
+            setVaultSyncState('synced');
+          }, { flush: true });
+          await refreshVaultListing(true);
+          showToast(`Created “${displayName}”`);
         } catch (err) {
           console.error('[Excali Up] Failed to create drawing:', err);
-          showToast('Failed to create drawing');
+          showToast('Could not create the drawing');
         }
       }
     });
   }
 
   async function createNewVaultSubfolder() {
-    if (!rootVaultHandle) {
+    if (!isVaultConnected()) {
       await connectLocalVaultFolder();
-      if (!rootVaultHandle) return;
+      if (!isVaultConnected()) return;
     }
 
-    showVaultPromptModal({
-      title: 'New Subfolder',
-      description: 'Create a new folder in current directory to organize drawings:',
-      placeholder: 'Folder name...',
-      initialValue: '',
-      confirmText: 'Create Folder',
-      onConfirm: async (folderName) => {
-        const cleanFolderName = Core.sanitizeFileName(folderName);
-        if (!cleanFolderName) return;
-
-        const targetSubPath = currentVaultRelativePath ? `${currentVaultRelativePath}/${cleanFolderName}` : cleanFolderName;
-
+    const parentLabel = currentVaultRelativePath ? `“${currentVaultRelativePath}”` : 'the vault root';
+    openVaultModal({
+      icon: 'lucide:folder-plus',
+      title: 'New folder',
+      description: `Created inside ${parentLabel}.`,
+      fields: [{ id: 'name', label: 'Folder name', value: '', placeholder: 'e.g. Client work' }],
+      confirmText: 'Create folder',
+      validate: ({ name }) => (Core.sanitizeFileName(name, '') ? '' : 'Enter a folder name.'),
+      onConfirm: async ({ name }) => {
+        const folderName = Core.sanitizeFileName(name, '');
+        const targetPath = joinVaultPath(currentVaultRelativePath, folderName);
         try {
-          await Core.createVaultSubfolder(rootVaultHandle, targetSubPath);
-          refreshVaultListing(true);
-          showToast(`Created folder ${cleanFolderName}`);
+          await Core.createVaultSubfolder(rootVaultHandle, targetPath);
+          currentVaultRelativePath = targetPath;
+          await refreshVaultListing(true);
+          showToast(`Created folder “${folderName}”`);
         } catch (err) {
           console.error('[Excali Up] Failed to create folder:', err);
-          showToast('Failed to create folder');
+          showToast('Could not create the folder');
         }
       }
     });
   }
 
-  async function toggleVaultFavorite(e, relativePath) {
-    e.stopPropagation();
-    if (!rootVaultHandle || !relativePath) return;
-
-    const favSet = new Set(vaultMetadata.favorites || []);
-    if (favSet.has(relativePath)) {
-      favSet.delete(relativePath);
-    } else {
-      favSet.add(relativePath);
-    }
-    vaultMetadata.favorites = [...favSet];
+  async function saveVaultMetadata() {
     await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
-    refreshVaultListing(true);
   }
 
-  async function renameVaultDrawing(relativePath) {
+  function replaceVaultPathReferences(fromPath, toPath) {
+    vaultMetadata.favorites = (vaultMetadata.favorites || []).map((path) => (path === fromPath ? toPath : path));
+    if (vaultMetadata.lastOpenedFile === fromPath) vaultMetadata.lastOpenedFile = toPath;
+    if (activeDrawingRelativePath === fromPath) activeDrawingRelativePath = toPath;
+  }
+
+  async function toggleVaultFavorite(relativePath) {
     if (!rootVaultHandle || !relativePath) return;
-    const oldFileName = relativePath.split('/').pop().replace(/\.excalidraw$/, '');
+    const favorites = new Set(vaultMetadata.favorites || []);
+    if (favorites.has(relativePath)) {
+      favorites.delete(relativePath);
+    } else {
+      favorites.add(relativePath);
+    }
+    vaultMetadata.favorites = [...favorites];
+    renderVaultItems();
+    await saveVaultMetadata();
+  }
 
-    showVaultPromptModal({
-      title: 'Rename Drawing',
-      description: `Enter new name for "${oldFileName}":`,
-      placeholder: 'New drawing name...',
-      initialValue: oldFileName,
+  function renameVaultDrawing(relativePath) {
+    if (!rootVaultHandle || !relativePath) return;
+    const oldName = getDrawingDisplayName(relativePath);
+    const folder = getParentFolder(relativePath);
+
+    openVaultModal({
+      icon: 'lucide:pencil',
+      title: 'Rename drawing',
+      fields: [{ id: 'name', label: 'Name', value: oldName, placeholder: 'Drawing name' }],
       confirmText: 'Rename',
-      onConfirm: async (newName) => {
-        if (!newName || newName === oldFileName) return;
-
-        const cleanNewName = Core.sanitizeFileName(newName, oldFileName);
-        const cleanFileName = cleanNewName.endsWith('.excalidraw') ? cleanNewName : `${cleanNewName}.excalidraw`;
-
-        const segments = relativePath.split('/');
-        segments.pop();
-        const newRelativePath = segments.length > 0 ? `${segments.join('/')}/${cleanFileName}` : cleanFileName;
-
+      validate: async ({ name }) => {
+        const fileName = getDrawingFileName(name);
+        if (!fileName) return 'Enter a name for the drawing.';
+        const targetPath = joinVaultPath(folder, fileName);
+        if (
+          targetPath.toLowerCase() !== relativePath.toLowerCase() &&
+          await Core.drawingFileExists(rootVaultHandle, targetPath)
+        ) {
+          return 'Another drawing in this folder already has that name.';
+        }
+        return '';
+      },
+      onConfirm: async ({ name }) => {
+        const fileName = getDrawingFileName(name);
+        const targetPath = joinVaultPath(folder, fileName);
+        if (targetPath === relativePath) return;
+        const newName = getDrawingDisplayName(fileName);
         try {
-          const content = await Core.readDrawingFile(rootVaultHandle, relativePath);
-          await Core.writeDrawingFile(rootVaultHandle, newRelativePath, content);
-          await Core.deleteDrawingFile(rootVaultHandle, relativePath);
-
-          if (vaultMetadata.favorites.includes(relativePath)) {
-            vaultMetadata.favorites = vaultMetadata.favorites.map(f => f === relativePath ? newRelativePath : f);
-          }
-          if (activeDrawingRelativePath === relativePath) {
-            activeDrawingRelativePath = newRelativePath;
-            if (currentApp && currentApp.state) currentApp.state.name = cleanNewName;
-          }
-          await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
-
-          refreshVaultListing(true);
-          showToast(`Renamed to ${cleanFileName}`);
+          await withVaultLock(async () => {
+            await Core.renameDrawingFile(rootVaultHandle, relativePath, targetPath);
+            const wasActive = activeDrawingRelativePath === relativePath;
+            replaceVaultPathReferences(relativePath, targetPath);
+            if (wasActive && currentApp && currentApp.api) {
+              currentApp.api.updateScene({ appState: { name: newName }, captureUpdate: 'NEVER' });
+            }
+            await saveVaultMetadata();
+          }, { flush: activeDrawingRelativePath === relativePath });
+          await refreshVaultListing(true);
+          showToast(`Renamed to “${newName}”`);
         } catch (err) {
           console.error('[Excali Up] Rename failed:', err);
-          showToast('Failed to rename drawing');
+          showToast(err && err.name === 'VaultEntryExistsError'
+            ? 'Another drawing already has that name'
+            : 'Could not rename the drawing');
         }
       }
     });
   }
 
-  async function deleteVaultDrawing(relativePath) {
+  async function duplicateVaultDrawing(relativePath) {
     if (!rootVaultHandle || !relativePath) return;
-    const fileName = relativePath.split('/').pop();
+    const baseName = getDrawingDisplayName(relativePath);
+    try {
+      const newPath = await withVaultLock(async () => {
+        const targetPath = await Core.getUniqueDrawingPath(
+          rootVaultHandle,
+          joinVaultPath(getParentFolder(relativePath), `${baseName} (Copy).excalidraw`),
+          (stem, index) => `${baseName} (Copy ${index})`
+        );
+        const content = await Core.readDrawingFile(rootVaultHandle, relativePath);
+        await Core.writeDrawingFile(rootVaultHandle, targetPath, content);
+        return targetPath;
+      }, { flush: activeDrawingRelativePath === relativePath });
+      await refreshVaultListing(true);
+      showToast(`Duplicated as “${getDrawingDisplayName(newPath)}”`);
+    } catch (err) {
+      console.error('[Excali Up] Duplicate failed:', err);
+      showToast('Could not duplicate the drawing');
+    }
+  }
 
-    showVaultConfirmModal({
-      title: 'Delete Drawing',
-      message: `Are you sure you want to delete "${fileName}"? This will permanently remove the file from your local disk.`,
-      confirmText: 'Delete Drawing',
-      isDanger: true,
+  async function moveVaultDrawing(sourceRelativePath, targetRelativeFolderPath) {
+    if (!rootVaultHandle || !sourceRelativePath) return;
+    const destination = targetRelativeFolderPath || 'Vault root';
+
+    try {
+      const result = await withVaultLock(async () => {
+        const moveResult = await Core.moveDrawingFile(rootVaultHandle, sourceRelativePath, targetRelativeFolderPath);
+        if (moveResult.moved) {
+          replaceVaultPathReferences(sourceRelativePath, moveResult.newRelativePath);
+          await saveVaultMetadata();
+        }
+        return moveResult;
+      }, { flush: activeDrawingRelativePath === sourceRelativePath });
+
+      if (result.moved) {
+        await refreshVaultListing(true);
+        showToast(`Moved to “${destination}”`);
+      } else {
+        showToast('The drawing is already in that folder');
+      }
+    } catch (err) {
+      console.error('[Excali Up] Failed to move drawing:', err);
+      showToast(err && err.name === 'VaultEntryExistsError'
+        ? `“${destination}” already has a drawing with that name`
+        : 'Could not move the drawing');
+    }
+  }
+
+  async function showVaultMoveModal(drawingPath) {
+    if (!rootVaultHandle || !drawingPath) return;
+    const currentFolder = getParentFolder(drawingPath);
+    const folderOptions = await getFolderOptions(currentFolder);
+
+    openVaultModal({
+      icon: 'lucide:folder-input',
+      title: 'Move drawing',
+      description: `Choose where to move “${getDrawingDisplayName(drawingPath)}”.`,
+      fields: [{ id: 'folder', label: 'Destination', type: 'select', options: folderOptions }],
+      confirmText: 'Move',
+      onConfirm: ({ folder }) => moveVaultDrawing(drawingPath, folder)
+    });
+  }
+
+  function deleteVaultDrawing(relativePath) {
+    if (!rootVaultHandle || !relativePath) return;
+    const name = getDrawingDisplayName(relativePath);
+    const isActive = activeDrawingRelativePath === relativePath;
+
+    openVaultModal({
+      icon: 'lucide:trash-2',
+      tone: 'danger',
+      title: 'Delete drawing?',
+      description: isActive
+        ? `“${name}” is open right now. The file is removed from disk, and the canvas stays unsaved until you edit it again.`
+        : `“${name}” will be permanently removed from your disk.`,
+      confirmText: 'Delete',
       onConfirm: async () => {
         try {
-          await Core.deleteDrawingFile(rootVaultHandle, relativePath);
-
-          vaultMetadata.favorites = vaultMetadata.favorites.filter(f => f !== relativePath);
-          if (activeDrawingRelativePath === relativePath) {
-            activeDrawingRelativePath = null;
-          }
-          await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
-
-          refreshVaultListing(true);
-          showToast(`Deleted ${fileName}`);
+          await withVaultLock(async () => {
+            await Core.deleteDrawingFile(rootVaultHandle, relativePath);
+            vaultMetadata.favorites = (vaultMetadata.favorites || []).filter((path) => path !== relativePath);
+            if (vaultMetadata.lastOpenedFile === relativePath) vaultMetadata.lastOpenedFile = null;
+            if (activeDrawingRelativePath === relativePath) {
+              activeDrawingRelativePath = null;
+              lastSavedSceneHash = getCurrentSceneHash();
+            }
+            await saveVaultMetadata();
+          });
+          await refreshVaultListing(true);
+          showToast(`Deleted “${name}”`);
         } catch (err) {
           console.error('[Excali Up] Delete failed:', err);
-          showToast('Failed to delete drawing');
+          showToast('Could not delete the drawing');
         }
       }
     });
   }
 
+  function deleteVaultFolderWithConfirm(folderPath) {
+    if (!rootVaultHandle || !folderPath) return;
+    const folderName = folderPath.split('/').pop();
+    const drawingCount = vaultAllDrawings.filter((file) => isVaultPathInside(file.path, folderPath)).length;
+
+    openVaultModal({
+      icon: 'lucide:folder-x',
+      tone: 'danger',
+      title: 'Delete folder?',
+      description: drawingCount
+        ? `“${folderName}” and the ${drawingCount} drawing${drawingCount === 1 ? '' : 's'} inside it will be permanently removed from your disk.`
+        : `The empty folder “${folderName}” will be removed from your disk.`,
+      confirmText: 'Delete folder',
+      onConfirm: async () => {
+        try {
+          await withVaultLock(async () => {
+            await Core.deleteVaultFolder(rootVaultHandle, folderPath, true);
+            vaultMetadata.favorites = (vaultMetadata.favorites || []).filter((path) => !isVaultPathInside(path, folderPath));
+            if (vaultMetadata.lastOpenedFile && isVaultPathInside(vaultMetadata.lastOpenedFile, folderPath)) {
+              vaultMetadata.lastOpenedFile = null;
+            }
+            if (activeDrawingRelativePath && isVaultPathInside(activeDrawingRelativePath, folderPath)) {
+              activeDrawingRelativePath = null;
+              lastSavedSceneHash = getCurrentSceneHash();
+            }
+            if (isVaultPathInside(currentVaultRelativePath, folderPath)) {
+              currentVaultRelativePath = getParentFolder(folderPath);
+            }
+            await saveVaultMetadata();
+          });
+          await refreshVaultListing(true);
+          showToast(`Deleted folder “${folderName}”`);
+        } catch (err) {
+          console.error('[Excali Up] Delete folder failed:', err);
+          showToast('Could not delete the folder');
+        }
+      }
+    });
+  }
+
+  // --- Listing ---
+
   async function refreshVaultListing(render = true) {
-    if (!rootVaultHandle) {
-      if (render) renderVaultItems();
+    if (!isVaultConnected()) {
+      if (render) renderVaultDrawer();
       return;
     }
 
+    const requestId = ++vaultListingRequestId;
+    vaultIsScanning = true;
+    if (render) renderVaultStatusCard();
     try {
-      vaultDirectoryData = await Core.scanVaultDirectory(rootVaultHandle, currentVaultRelativePath);
-      vaultAllDrawings = await Core.scanAllVaultDrawings(rootVaultHandle, '');
-      if (render) {
-        renderVaultBreadcrumbs();
-        renderVaultItems();
+      let directory;
+      try {
+        directory = await Core.scanVaultDirectory(rootVaultHandle, currentVaultRelativePath);
+      } catch (err) {
+        if (!currentVaultRelativePath) throw err;
+        // The folder vanished (deleted outside the browser): fall back to the root.
+        currentVaultRelativePath = '';
+        directory = await Core.scanVaultDirectory(rootVaultHandle, '');
       }
+      const allDrawings = await Core.scanAllVaultDrawings(rootVaultHandle, '');
+      if (requestId !== vaultListingRequestId) return;
+      vaultDirectoryData = directory;
+      vaultAllDrawings = allDrawings;
     } catch (err) {
+      if (requestId !== vaultListingRequestId) return;
       console.error('[Excali Up] Failed to scan vault:', err);
       const hasPerm = await Core.verifyHandlePermission(rootVaultHandle, true);
-      if (!hasPerm) {
-        setVaultSyncState('permission-required');
-      }
-      if (render) renderVaultItems();
+      if (!hasPerm) setVaultSyncState('permission-required');
+    } finally {
+      if (requestId === vaultListingRequestId) vaultIsScanning = false;
     }
+    if (render && requestId === vaultListingRequestId) renderVaultDrawer();
   }
 
-  function attachDropTarget(element, targetFolderPath) {
-    element.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-    });
-    element.addEventListener('dragenter', (e) => {
-      e.preventDefault();
-      element.classList.add('drag-target');
-    });
-    element.addEventListener('dragleave', (e) => {
-      if (!element.contains(e.relatedTarget)) {
-        element.classList.remove('drag-target');
+  // Cheap update after an auto-save instead of rescanning the whole vault.
+  function updateVaultListingEntry(relativePath, size) {
+    const now = Date.now();
+    const name = relativePath.split('/').pop();
+    const update = (list, addIfMissing) => {
+      const entry = list.find((file) => file.path === relativePath);
+      if (entry) {
+        entry.size = size;
+        entry.lastModified = now;
+      } else if (addIfMissing) {
+        list.push({ name, path: relativePath, size, lastModified: now });
       }
-    });
-    element.addEventListener('drop', (e) => {
-      e.preventDefault();
-      element.classList.remove('drag-target');
-      const sourcePath = e.dataTransfer.getData('text/plain');
-      if (sourcePath) {
-        moveVaultDrawing(sourcePath, targetFolderPath);
-      }
-    });
+      list.sort((a, b) => (b.lastModified || 0) - (a.lastModified || 0));
+    };
+    update(vaultAllDrawings, true);
+    if (vaultDirectoryData && Array.isArray(vaultDirectoryData.files)) {
+      update(vaultDirectoryData.files, getParentFolder(relativePath) === currentVaultRelativePath);
+    }
+    if (isVaultDrawerOpen) renderVaultItems();
+  }
+
+  function getVisibleVaultEntries() {
+    const query = vaultSearchQuery.trim().toLowerCase();
+    const favorites = new Set(vaultMetadata.favorites || []);
+    const matches = (file) => !query || getDrawingDisplayName(file.path).toLowerCase().includes(query);
+
+    if (vaultCurrentView === 'favorites') {
+      return {
+        folders: [],
+        files: vaultAllDrawings
+          .filter((file) => favorites.has(file.path) && matches(file))
+          .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })),
+        showPath: true,
+        filesLabel: 'Starred'
+      };
+    }
+    if (vaultCurrentView === 'recent') {
+      return {
+        folders: [],
+        files: [...vaultAllDrawings]
+          .sort((a, b) => (b.lastModified || 0) - (a.lastModified || 0))
+          .filter(matches)
+          .slice(0, VAULT_RECENT_LIMIT),
+        showPath: true,
+        filesLabel: 'Recently edited'
+      };
+    }
+    if (query) {
+      return {
+        folders: (vaultDirectoryData.folders || []).filter((folder) => folder.name.toLowerCase().includes(query)),
+        files: vaultAllDrawings.filter(matches),
+        showPath: true,
+        filesLabel: 'Matching drawings'
+      };
+    }
+    return {
+      folders: vaultDirectoryData.folders || [],
+      files: vaultDirectoryData.files || [],
+      showPath: false,
+      filesLabel: 'Drawings'
+    };
+  }
+
+  function renderVaultDrawer() {
+    if (!vaultDrawerElement) return;
+    const connected = isVaultConnected();
+    vaultDrawerElement.classList.toggle('is-disconnected', !connected);
+    renderVaultStatusCard();
+    renderVaultTabs();
+    renderVaultBreadcrumbs();
+    renderVaultItems();
+  }
+
+  function renderVaultStatusCard() {
+    const card = document.getElementById('excaliup-vault-status');
+    if (!card) return;
+    if (!isVaultConnected()) {
+      card.hidden = true;
+      return;
+    }
+    card.hidden = false;
+    const info = getVaultStatusInfo();
+    const activeName = activeDrawingRelativePath ? getDrawingDisplayName(activeDrawingRelativePath) : '';
+    card.dataset.tone = info.tone;
+    card.innerHTML = `
+      <span class="excaliup-vault-status-icon" aria-hidden="true">
+        <iconify-icon icon="lucide:folder-open"></iconify-icon>
+      </span>
+      <span class="excaliup-vault-status-text">
+        <span class="excaliup-vault-status-name" title="${escapeHtml(rootVaultHandle.name)}">${escapeHtml(rootVaultHandle.name)}</span>
+        <span class="excaliup-vault-status-detail" role="status" aria-live="polite">
+          <span class="excaliup-vault-dot" data-tone="${info.tone}"></span>
+          <span>${escapeHtml(vaultIsScanning && info.tone === 'ok' ? 'Scanning folder…' : info.detail)}${activeName ? ` · <strong>${escapeHtml(activeName)}</strong>` : ''}</span>
+        </span>
+      </span>
+      ${info.tone === 'error'
+        ? '<button type="button" class="excaliup-vault-link-btn" data-vault-action="retry-save">Retry</button>'
+        : '<button type="button" class="excaliup-vault-link-btn" data-vault-action="change-folder" title="Connect a different folder">Change</button>'}
+    `;
+  }
+
+  function renderVaultTabs() {
+    if (!vaultDrawerElement) return;
+    for (const tab of vaultDrawerElement.querySelectorAll('[data-vault-tab]')) {
+      const isActive = tab.dataset.vaultTab === vaultCurrentView;
+      tab.classList.toggle('is-active', isActive);
+      tab.setAttribute('aria-selected', String(isActive));
+    }
+    const allCount = document.getElementById('excaliup-vault-count-all');
+    const starCount = document.getElementById('excaliup-vault-count-favorites');
+    const existing = new Set(vaultAllDrawings.map((file) => file.path));
+    if (allCount) allCount.textContent = String(vaultAllDrawings.length);
+    if (starCount) {
+      starCount.textContent = String((vaultMetadata.favorites || []).filter((path) => existing.has(path)).length);
+    }
   }
 
   function renderVaultBreadcrumbs() {
     const container = document.getElementById('excaliup-vault-breadcrumbs');
     if (!container) return;
+    const visible = isVaultConnected() && vaultCurrentView === 'all' && !vaultSearchQuery.trim();
+    container.hidden = !visible;
+    if (!visible) return;
 
-    container.innerHTML = '';
-    const rootCrumb = document.createElement('span');
-    rootCrumb.className = 'excaliup-vault-crumb';
-    rootCrumb.innerHTML = '<iconify-icon icon="lucide:home"></iconify-icon> Vault';
-    rootCrumb.addEventListener('click', () => {
-      currentVaultRelativePath = '';
-      refreshVaultListing(true);
-    });
-    attachDropTarget(rootCrumb, '');
-    container.appendChild(rootCrumb);
-
-    if (currentVaultRelativePath) {
-      const segments = currentVaultRelativePath.split('/').filter(Boolean);
-      let accumulated = '';
-      for (let i = 0; i < segments.length; i++) {
-        const seg = segments[i];
-        accumulated = accumulated ? `${accumulated}/${seg}` : seg;
-        const targetPath = accumulated;
-
-        const sep = document.createElement('span');
-        sep.textContent = ' / ';
-        sep.style.opacity = '0.4';
-        container.appendChild(sep);
-
-        const crumb = document.createElement('span');
-        crumb.className = 'excaliup-vault-crumb';
-        crumb.innerHTML = `<iconify-icon icon="lucide:folder"></iconify-icon> ${seg}`;
-        crumb.addEventListener('click', () => {
-          currentVaultRelativePath = targetPath;
-          refreshVaultListing(true);
-        });
-        attachDropTarget(crumb, targetPath);
-        container.appendChild(crumb);
-      }
+    const crumbs = [{ path: '', label: 'Vault' }];
+    let accumulated = '';
+    for (const segment of currentVaultRelativePath.split('/').filter(Boolean)) {
+      accumulated = joinVaultPath(accumulated, segment);
+      crumbs.push({ path: accumulated, label: segment });
     }
+
+    container.innerHTML = crumbs.map((crumb, index) => {
+      const isLast = index === crumbs.length - 1;
+      const icon = index === 0 ? '<iconify-icon icon="lucide:home" aria-hidden="true"></iconify-icon>' : '';
+      const separator = index > 0 ? '<iconify-icon class="excaliup-vault-crumb-sep" icon="lucide:chevron-right" aria-hidden="true"></iconify-icon>' : '';
+      return `${separator}<button type="button" class="excaliup-vault-crumb${isLast ? ' is-current' : ''}" data-vault-crumb="${escapeHtml(crumb.path)}" data-drop-folder="${escapeHtml(crumb.path)}"${isLast ? ' aria-current="page"' : ''}>${icon}<span>${escapeHtml(crumb.label)}</span></button>`;
+    }).join('');
+  }
+
+  function renderVaultEmptyState(list, { icon, title, text, action, actionLabel, actionIcon }) {
+    list.innerHTML = `
+      <div class="excaliup-vault-empty">
+        <span class="excaliup-vault-empty-icon"><iconify-icon icon="${icon}" aria-hidden="true"></iconify-icon></span>
+        <div class="excaliup-vault-empty-title">${escapeHtml(title)}</div>
+        <div class="excaliup-vault-empty-text">${escapeHtml(text)}</div>
+        ${action ? `<button type="button" class="excaliup-vault-button is-primary" data-vault-action="${action}">
+          <iconify-icon icon="${actionIcon}" aria-hidden="true"></iconify-icon><span>${escapeHtml(actionLabel)}</span>
+        </button>` : ''}
+      </div>
+    `;
+  }
+
+  function renderFolderRow(folder) {
+    const count = vaultAllDrawings.filter((file) => isVaultPathInside(file.path, folder.path)).length;
+    return `
+      <div class="excaliup-vault-row is-folder" role="listitem" tabindex="-1" data-kind="folder" data-path="${escapeHtml(folder.path)}" data-drop-folder="${escapeHtml(folder.path)}">
+        <span class="excaliup-vault-row-icon" aria-hidden="true"><iconify-icon icon="lucide:folder"></iconify-icon></span>
+        <span class="excaliup-vault-row-text">
+          <span class="excaliup-vault-row-name">${escapeHtml(folder.name)}</span>
+          <span class="excaliup-vault-row-meta">${count ? `${count} drawing${count === 1 ? '' : 's'}` : 'Empty'}</span>
+        </span>
+        <button type="button" class="excaliup-vault-row-menu" data-vault-action="menu" aria-label="Folder actions for ${escapeHtml(folder.name)}" title="Actions">
+          <iconify-icon icon="lucide:more-horizontal" aria-hidden="true"></iconify-icon>
+        </button>
+        <iconify-icon class="excaliup-vault-row-chevron" icon="lucide:chevron-right" aria-hidden="true"></iconify-icon>
+      </div>
+    `;
+  }
+
+  function renderFileRow(file, showPath, favorites) {
+    const isStarred = favorites.has(file.path);
+    const isActive = activeDrawingRelativePath === file.path;
+    const name = getDrawingDisplayName(file.path);
+    const folder = getParentFolder(file.path);
+    const meta = [
+      showPath ? (folder || 'Vault root') : '',
+      formatFileDate(file.lastModified),
+      formatBytes(file.size)
+    ].filter(Boolean).join(' · ');
+
+    return `
+      <div class="excaliup-vault-row is-file${isActive ? ' is-active' : ''}" role="listitem" tabindex="-1" draggable="true" data-kind="file" data-path="${escapeHtml(file.path)}"${isActive ? ' aria-current="true"' : ''}>
+        <button type="button" class="excaliup-vault-star${isStarred ? ' is-starred' : ''}" data-vault-action="star" aria-pressed="${isStarred}" aria-label="${isStarred ? 'Remove from starred' : 'Star'} ${escapeHtml(name)}" title="${isStarred ? 'Unstar' : 'Star'}">
+          <iconify-icon icon="${isStarred ? 'material-symbols:star-rounded' : 'material-symbols:star-outline-rounded'}" aria-hidden="true"></iconify-icon>
+        </button>
+        <span class="excaliup-vault-row-text">
+          <span class="excaliup-vault-row-name">${escapeHtml(name)}</span>
+          <span class="excaliup-vault-row-meta">${escapeHtml(meta)}</span>
+        </span>
+        ${isActive ? '<span class="excaliup-vault-chip">Open</span>' : ''}
+        <button type="button" class="excaliup-vault-row-menu" data-vault-action="menu" aria-label="Actions for ${escapeHtml(name)}" title="Actions">
+          <iconify-icon icon="lucide:more-horizontal" aria-hidden="true"></iconify-icon>
+        </button>
+      </div>
+    `;
   }
 
   function renderVaultItems() {
     const list = document.getElementById('excaliup-vault-list');
+    const footer = document.getElementById('excaliup-vault-footer-info');
     if (!list) return;
 
-    list.innerHTML = '';
-
-    if (!rootVaultHandle) {
-      list.innerHTML = `
-        <div class="excaliup-vault-empty">
-          <iconify-icon icon="lucide:folder-heart" style="font-size: 40px; color: hsl(270, 75%, 70%);"></iconify-icon>
-          <div style="font-weight: 600; font-size: 15px;">Connect Local Vault</div>
-          <div style="font-size: 12px; max-width: 260px; line-height: 1.5; opacity: 0.8;">
-            Save all drawings directly to your local computer with automatic background syncing.
-          </div>
-          <button class="excaliup-vault-btn-primary" id="excaliup-vault-connect-btn" style="margin-top: 8px;">
-            <iconify-icon icon="lucide:folder-open"></iconify-icon> Choose Local Folder
-          </button>
-        </div>
-      `;
-      const btn = list.querySelector('#excaliup-vault-connect-btn');
-      if (btn) btn.addEventListener('click', connectLocalVaultFolder);
+    if (!rootVaultHandle || vaultSyncState === 'unlinked') {
+      if (footer) footer.textContent = '';
+      renderVaultEmptyState(list, {
+        icon: 'lucide:hard-drive-download',
+        title: 'Save drawings to your computer',
+        text: 'Pick a folder and every change is written to a .excalidraw file there automatically. Nothing leaves your machine.',
+        action: 'connect',
+        actionLabel: 'Choose folder',
+        actionIcon: 'lucide:folder-open'
+      });
       return;
     }
 
     if (vaultSyncState === 'permission-required') {
-      list.innerHTML = `
-        <div class="excaliup-vault-empty">
-          <iconify-icon icon="lucide:shield-alert" style="font-size: 40px; color: #f59e0b;"></iconify-icon>
-          <div style="font-weight: 600; font-size: 15px;">Reconnect Folder Access</div>
-          <div style="font-size: 12px; max-width: 260px; line-height: 1.5; opacity: 0.8;">
-            Browser security reset directory permissions for "${rootVaultHandle.name}". Click below to re-authorize.
-          </div>
-          <button class="excaliup-vault-btn-primary" id="excaliup-vault-reauth-btn" style="margin-top: 8px;">
-            <iconify-icon icon="lucide:key"></iconify-icon> Grant Access
-          </button>
-        </div>
-      `;
-      const btn = list.querySelector('#excaliup-vault-reauth-btn');
-      if (btn) btn.addEventListener('click', async () => {
-        const granted = await Core.requestHandlePermission(rootVaultHandle, true);
-        if (granted) {
-          setVaultSyncState('synced');
-          refreshVaultListing(true);
-        }
+      if (footer) footer.textContent = '';
+      renderVaultEmptyState(list, {
+        icon: 'lucide:shield-alert',
+        title: 'Reconnect your vault',
+        text: `The browser needs your permission again to use “${rootVaultHandle.name}”.`,
+        action: 'reconnect',
+        actionLabel: 'Grant access',
+        actionIcon: 'lucide:key-round'
       });
       return;
     }
 
-    const allTabCount = document.getElementById('excaliup-vault-all-count');
-    const starTabCount = document.getElementById('excaliup-vault-star-count');
-    if (allTabCount) allTabCount.textContent = vaultAllDrawings.length;
-    if (starTabCount) starTabCount.textContent = (vaultMetadata.favorites || []).length;
-
-    let displayFolders = [];
-    let displayFiles = [];
-
-    const query = vaultSearchQuery.trim().toLowerCase();
-
-    if (vaultCurrentView === 'favorites') {
-      const favSet = new Set(vaultMetadata.favorites || []);
-      displayFiles = vaultAllDrawings.filter(f => favSet.has(f.path));
-      displayFolders = [];
-    } else {
-      displayFolders = vaultDirectoryData.folders || [];
-      displayFiles = vaultDirectoryData.files || [];
+    renderVaultTabs();
+    const { folders, files, showPath, filesLabel } = getVisibleVaultEntries();
+    if (footer) {
+      const total = vaultAllDrawings.length;
+      footer.textContent = `${total} drawing${total === 1 ? '' : 's'} in vault`;
     }
 
-    if (query) {
-      displayFolders = displayFolders.filter(f => f.name.toLowerCase().includes(query));
-      displayFiles = displayFiles.filter(f => f.name.toLowerCase().includes(query));
-    }
-
-    if (displayFolders.length === 0 && displayFiles.length === 0) {
-      list.innerHTML = `
-        <div class="excaliup-vault-empty">
-          <iconify-icon icon="lucide:inbox" style="font-size: 32px; opacity: 0.5;"></iconify-icon>
-          <div>No drawings found</div>
-        </div>
-      `;
+    if (folders.length === 0 && files.length === 0) {
+      const query = vaultSearchQuery.trim();
+      const emptyByView = {
+        favorites: { icon: 'material-symbols:star-outline-rounded', title: 'No starred drawings', text: 'Star a drawing to pin it here.' },
+        recent: { icon: 'lucide:clock', title: 'Nothing here yet', text: 'Drawings you edit show up here.' },
+        all: currentVaultRelativePath
+          ? { icon: 'lucide:folder-open', title: 'This folder is empty', text: 'Create a drawing here, or drag one onto this folder.' }
+          : { icon: 'lucide:file-plus-2', title: 'No drawings yet', text: 'Start drawing and it is saved here automatically.' }
+      };
+      renderVaultEmptyState(list, query
+        ? { icon: 'lucide:search-x', title: 'No matches', text: `Nothing matches “${query}”.` }
+        : emptyByView[vaultCurrentView] || emptyByView.all);
       return;
     }
 
-    for (const folder of displayFolders) {
-      const row = document.createElement('div');
-      row.className = 'excaliup-vault-item';
-      row.innerHTML = `
-        <div class="excaliup-vault-item-icon" style="color: hsl(270, 75%, 70%);">
-          <iconify-icon icon="lucide:folder"></iconify-icon>
-        </div>
-        <div class="excaliup-vault-item-info">
-          <div class="excaliup-vault-item-name">${folder.name}</div>
-        </div>
-        <div class="excaliup-vault-folder-actions">
-          <button class="excaliup-vault-folder-del-btn" title="Delete folder">
-            <iconify-icon icon="lucide:trash-2"></iconify-icon>
-          </button>
-        </div>
-        <iconify-icon icon="lucide:chevron-right" style="opacity: 0.4; font-size: 14px;"></iconify-icon>
-      `;
+    const favorites = new Set(vaultMetadata.favorites || []);
+    let html = '';
+    if (folders.length) {
+      html += `<div class="excaliup-vault-section-label">Folders</div>`;
+      html += folders.map(renderFolderRow).join('');
+    }
+    if (files.length) {
+      html += `<div class="excaliup-vault-section-label">${escapeHtml(filesLabel)}</div>`;
+      html += files.map((file) => renderFileRow(file, showPath, favorites)).join('');
+    }
 
-      row.addEventListener('click', (e) => {
-        if (e.target.closest('.excaliup-vault-folder-del-btn')) return;
-        currentVaultRelativePath = folder.path;
-        refreshVaultListing(true);
-      });
+    const focusedPath = document.activeElement && document.activeElement.closest &&
+      document.activeElement.closest('.excaliup-vault-row') &&
+      document.activeElement.closest('.excaliup-vault-row').dataset.path;
+    list.innerHTML = html;
+    const rows = list.querySelectorAll('.excaliup-vault-row');
+    const focusTarget = [...rows].find((row) => row.dataset.path === focusedPath);
+    if (rows.length) (focusTarget || rows[0]).tabIndex = 0;
+    if (focusTarget) focusTarget.focus();
+  }
 
-      const delBtn = row.querySelector('.excaliup-vault-folder-del-btn');
-      if (delBtn) {
-        delBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          deleteVaultFolderWithConfirm(folder.path, folder.name);
-        });
+  // --- Popover & modals ---
+
+  let activeVaultModal = null;
+  let activeVaultPopover = null;
+
+  function closeActiveVaultPopover(restoreFocus = false) {
+    if (!activeVaultPopover) return;
+    const anchor = activeVaultPopover.anchor;
+    activeVaultPopover.remove();
+    activeVaultPopover = null;
+    if (restoreFocus && anchor && anchor.isConnected) anchor.focus();
+  }
+
+  document.addEventListener('pointerdown', (e) => {
+    if (
+      activeVaultPopover &&
+      !e.target.closest('.excaliup-vault-popover') &&
+      !e.target.closest('.excaliup-vault-row-menu')
+    ) {
+      closeActiveVaultPopover();
+    }
+  }, true);
+
+  function showVaultActionPopover(anchorElement, kind, path) {
+    closeActiveVaultPopover();
+    const container = document.querySelector('.excalidraw') || document.body;
+    const items = kind === 'folder'
+      ? [
+        { action: 'open', icon: 'lucide:folder-open', label: 'Open folder' },
+        { action: 'delete', icon: 'lucide:trash-2', label: 'Delete folder', danger: true }
+      ]
+      : [
+        { action: 'open', icon: 'lucide:square-arrow-out-up-right', label: 'Open', hint: 'Enter' },
+        { action: 'rename', icon: 'lucide:pencil', label: 'Rename', hint: 'F2' },
+        { action: 'move', icon: 'lucide:folder-input', label: 'Move to…' },
+        { action: 'duplicate', icon: 'lucide:copy', label: 'Duplicate' },
+        { separator: true },
+        { action: 'delete', icon: 'lucide:trash-2', label: 'Delete', hint: 'Del', danger: true }
+      ];
+
+    const popover = document.createElement('div');
+    popover.className = 'excaliup-vault-popover';
+    popover.setAttribute('role', 'menu');
+    popover.innerHTML = items.map((item) => item.separator
+      ? '<div class="excaliup-vault-popover-sep" role="separator"></div>'
+      : `<button type="button" role="menuitem" class="excaliup-vault-popover-item${item.danger ? ' is-danger' : ''}" data-popover-action="${item.action}">
+          <iconify-icon icon="${item.icon}" aria-hidden="true"></iconify-icon>
+          <span>${escapeHtml(item.label)}</span>
+          ${item.hint ? `<kbd>${escapeHtml(item.hint)}</kbd>` : ''}
+        </button>`).join('');
+
+    popover.addEventListener('click', (e) => {
+      const button = e.target.closest('[data-popover-action]');
+      if (!button) return;
+      e.stopPropagation();
+      closeActiveVaultPopover();
+      runVaultRowAction(button.dataset.popoverAction, kind, path);
+    });
+    popover.addEventListener('keydown', (e) => {
+      const buttons = [...popover.querySelectorAll('[data-popover-action]')];
+      const index = buttons.indexOf(document.activeElement);
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const next = e.key === 'ArrowDown' ? index + 1 : index - 1;
+        buttons[(next + buttons.length) % buttons.length].focus();
+      } else if (e.key === 'Escape' || e.key === 'Tab') {
+        e.preventDefault();
+        closeActiveVaultPopover(true);
       }
+      e.stopPropagation();
+    });
 
-      attachDropTarget(row, folder.path);
-      list.appendChild(row);
+    popover.anchor = anchorElement;
+    popover.style.visibility = 'hidden';
+    container.appendChild(popover);
+    const rect = anchorElement.getBoundingClientRect();
+    const width = popover.offsetWidth;
+    const height = popover.offsetHeight;
+    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+    const below = rect.bottom + 4;
+    const top = below + height > window.innerHeight - 8 ? Math.max(8, rect.top - height - 4) : below;
+    popover.style.left = `${left}px`;
+    popover.style.top = `${top}px`;
+    popover.style.visibility = '';
+    activeVaultPopover = popover;
+    const first = popover.querySelector('[data-popover-action]');
+    if (first) first.focus();
+  }
+
+  function closeActiveVaultModal() {
+    if (!activeVaultModal) return;
+    const { overlay, returnFocus } = activeVaultModal;
+    overlay.remove();
+    activeVaultModal = null;
+    if (returnFocus && returnFocus.isConnected) returnFocus.focus();
+  }
+
+  // One modal for prompts, pickers and confirmations. `validate` may be async
+  // and returns an error message (kept inline) or an empty string.
+  function openVaultModal({
+    icon = 'lucide:file-pen-line',
+    tone = 'default',
+    title,
+    description = '',
+    fields = [],
+    confirmText = 'Confirm',
+    validate,
+    onConfirm
+  }) {
+    closeActiveVaultModal();
+    closeActiveVaultPopover();
+    const container = document.querySelector('.excalidraw') || document.body;
+    const overlay = document.createElement('div');
+    overlay.className = 'excaliup-vault-modal-overlay';
+    const titleId = `excaliup-vault-modal-title-${Date.now()}`;
+
+    const fieldsHtml = fields.map((field) => {
+      const id = `excaliup-vault-field-${field.id}`;
+      const control = field.type === 'select'
+        ? `<select class="excaliup-vault-input" id="${id}" data-field="${field.id}">
+            ${(field.options || []).map((option) => `<option value="${escapeHtml(option.value)}"${option.selected ? ' selected' : ''}>${escapeHtml(option.label)}</option>`).join('')}
+          </select>`
+        : `<input type="text" class="excaliup-vault-input" id="${id}" data-field="${field.id}" value="${escapeHtml(field.value || '')}" placeholder="${escapeHtml(field.placeholder || '')}" autocomplete="off" spellcheck="false">`;
+      return `<label class="excaliup-vault-field" for="${id}"><span>${escapeHtml(field.label)}</span>${control}</label>`;
+    }).join('');
+
+    overlay.innerHTML = `
+      <div class="excaliup-vault-modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}" data-tone="${tone}">
+        <div class="excaliup-vault-modal-header">
+          <span class="excaliup-vault-modal-icon" aria-hidden="true"><iconify-icon icon="${icon}"></iconify-icon></span>
+          <div>
+            <div class="excaliup-vault-modal-title" id="${titleId}">${escapeHtml(title)}</div>
+            ${description ? `<div class="excaliup-vault-modal-desc">${escapeHtml(description)}</div>` : ''}
+          </div>
+        </div>
+        ${fieldsHtml ? `<div class="excaliup-vault-modal-fields">${fieldsHtml}</div>` : ''}
+        <div class="excaliup-vault-modal-error" role="alert" hidden></div>
+        <div class="excaliup-vault-modal-actions">
+          <button type="button" class="excaliup-vault-button" data-modal-action="cancel">Cancel</button>
+          <button type="button" class="excaliup-vault-button ${tone === 'danger' ? 'is-danger' : 'is-primary'}" data-modal-action="confirm">${escapeHtml(confirmText)}</button>
+        </div>
+      </div>
+    `;
+
+    const errorElement = overlay.querySelector('.excaliup-vault-modal-error');
+    const confirmButton = overlay.querySelector('[data-modal-action="confirm"]');
+    const controls = [...overlay.querySelectorAll('[data-field]')];
+    let busy = false;
+
+    const readValues = () => Object.fromEntries(controls.map((control) => [
+      control.dataset.field,
+      control.tagName === 'INPUT' ? control.value.trim() : control.value
+    ]));
+
+    const confirm = async () => {
+      if (busy) return;
+      busy = true;
+      confirmButton.disabled = true;
+      try {
+        const values = readValues();
+        const error = validate ? await validate(values) : '';
+        if (error) {
+          errorElement.textContent = error;
+          errorElement.hidden = false;
+          const firstInput = controls.find((control) => control.tagName === 'INPUT');
+          if (firstInput) firstInput.focus();
+          return;
+        }
+        closeActiveVaultModal();
+        await onConfirm(values);
+      } finally {
+        busy = false;
+        confirmButton.disabled = false;
+      }
+    };
+
+    overlay.addEventListener('click', (e) => {
+      const action = e.target.closest('[data-modal-action]');
+      if (action) {
+        if (action.dataset.modalAction === 'confirm') confirm();
+        else closeActiveVaultModal();
+      } else if (e.target === overlay) {
+        closeActiveVaultModal();
+      }
+    });
+    overlay.addEventListener('input', () => {
+      errorElement.hidden = true;
+    });
+    overlay.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeActiveVaultModal();
+      } else if (e.key === 'Enter' && e.target.tagName !== 'BUTTON') {
+        e.preventDefault();
+        confirm();
+      } else if (e.key === 'Tab') {
+        // Keep focus inside the dialog.
+        const focusable = [...overlay.querySelectorAll('input, select, button:not(:disabled)')];
+        const index = focusable.indexOf(document.activeElement);
+        const next = e.shiftKey ? index - 1 : index + 1;
+        if (next < 0 || next >= focusable.length) {
+          e.preventDefault();
+          focusable[(next + focusable.length) % focusable.length].focus();
+        }
+      }
+      // Never let Excalidraw shortcuts fire while typing in the dialog.
+      e.stopPropagation();
+    });
+
+    activeVaultModal = { overlay, returnFocus: document.activeElement };
+    container.appendChild(overlay);
+    const firstInput = controls.find((control) => control.tagName === 'INPUT') || controls[0];
+    if (firstInput) {
+      firstInput.focus();
+      if (firstInput.select) firstInput.select();
+    } else {
+      confirmButton.focus();
+    }
+  }
+
+  // --- Drawer interactions ---
+
+  function runVaultRowAction(action, kind, path) {
+    if (kind === 'folder') {
+      if (action === 'open') {
+        currentVaultRelativePath = path;
+        vaultSearchQuery = '';
+        const search = document.getElementById('excaliup-vault-search');
+        if (search) search.value = '';
+        vaultCurrentView = 'all';
+        refreshVaultListing(true).then(() => focusFirstVaultRow());
+      } else if (action === 'delete') {
+        deleteVaultFolderWithConfirm(path);
+      }
+      return;
+    }
+    switch (action) {
+      case 'open': openVaultDrawing(path); break;
+      case 'rename': renameVaultDrawing(path); break;
+      case 'move': showVaultMoveModal(path); break;
+      case 'duplicate': duplicateVaultDrawing(path); break;
+      case 'delete': deleteVaultDrawing(path); break;
+      case 'star': toggleVaultFavorite(path); break;
+    }
+  }
+
+  function focusFirstVaultRow() {
+    const row = vaultDrawerElement && vaultDrawerElement.querySelector('.excaliup-vault-row');
+    if (row) row.focus();
+  }
+
+  function onVaultDrawerClick(e) {
+    const target = e.target;
+    const actionButton = target.closest('[data-vault-action]');
+    const row = target.closest('.excaliup-vault-row');
+
+    if (actionButton) {
+      const action = actionButton.dataset.vaultAction;
+      e.stopPropagation();
+      if (row && action === 'menu') {
+        showVaultActionPopover(actionButton, row.dataset.kind, row.dataset.path);
+      } else if (row && action === 'star') {
+        toggleVaultFavorite(row.dataset.path);
+      } else {
+        runVaultDrawerAction(action);
+      }
+      return;
     }
 
-    for (const file of displayFiles) {
-      const isStarred = (vaultMetadata.favorites || []).includes(file.path);
-      const isActive = activeDrawingRelativePath === file.path;
-      const cleanDisplayName = file.name.replace(/\.excalidraw$/, '');
-
-      const row = document.createElement('div');
-      row.className = `excaliup-vault-item ${isActive ? 'active' : ''}`;
-      row.setAttribute('draggable', 'true');
-      row.innerHTML = `
-        <button class="excaliup-vault-item-star ${isStarred ? 'starred' : ''}" title="${isStarred ? 'Unfavorite' : 'Favorite'}">
-          <iconify-icon icon="${isStarred ? 'lucide:star' : 'lucide:star'}"></iconify-icon>
-        </button>
-        <div class="excaliup-vault-item-icon" style="color: ${isActive ? '#10b981' : 'rgba(255,255,255,0.7)'};">
-          <iconify-icon icon="lucide:file-edit"></iconify-icon>
-        </div>
-        <div class="excaliup-vault-item-info">
-          <div class="excaliup-vault-item-name">${cleanDisplayName}</div>
-          <div class="excaliup-vault-item-meta">${formatFileDate(file.lastModified)} · ${formatBytes(file.size)}</div>
-        </div>
-        ${isActive ? '<span class="excaliup-vault-item-badge">Active</span>' : ''}
-        <button class="excaliup-vault-item-menu-btn" title="Actions">
-          <iconify-icon icon="lucide:more-vertical"></iconify-icon>
-        </button>
-      `;
-
-      row.addEventListener('dragstart', (e) => {
-        e.dataTransfer.setData('text/plain', file.path);
-        e.dataTransfer.effectAllowed = 'move';
-        row.classList.add('dragging');
-      });
-
-      row.addEventListener('dragend', () => {
-        row.classList.remove('dragging');
-      });
-
-      const starBtn = row.querySelector('.excaliup-vault-item-star');
-      starBtn.addEventListener('click', (e) => toggleVaultFavorite(e, file.path));
-
-      row.addEventListener('click', (e) => {
-        if (e.target.closest('.excaliup-vault-item-star') || e.target.closest('.excaliup-vault-item-menu-btn')) return;
-        openVaultDrawing(file.path);
-      });
-
-      const menuBtn = row.querySelector('.excaliup-vault-item-menu-btn');
-      menuBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        showVaultActionPopover(menuBtn, file);
-      });
-
-      list.appendChild(row);
+    const crumb = target.closest('[data-vault-crumb]');
+    if (crumb) {
+      currentVaultRelativePath = crumb.dataset.vaultCrumb;
+      refreshVaultListing(true);
+      return;
     }
+
+    const tab = target.closest('[data-vault-tab]');
+    if (tab) {
+      vaultCurrentView = tab.dataset.vaultTab;
+      renderVaultDrawer();
+      return;
+    }
+
+    if (row) runVaultRowAction('open', row.dataset.kind, row.dataset.path);
+  }
+
+  function runVaultDrawerAction(action) {
+    switch (action) {
+      case 'close': closeVaultDrawer(); break;
+      case 'refresh': refreshVaultListing(true); break;
+      case 'connect':
+      case 'change-folder': connectLocalVaultFolder(); break;
+      case 'reconnect': requestVaultPermission(); break;
+      case 'retry-save': saveVaultNow(true); break;
+      case 'new-drawing': createNewVaultDrawing(); break;
+      case 'new-folder': createNewVaultSubfolder(); break;
+      case 'clear-search': {
+        const search = document.getElementById('excaliup-vault-search');
+        if (search) {
+          search.value = '';
+          search.focus();
+        }
+        vaultSearchQuery = '';
+        vaultDrawerElement.classList.remove('has-query');
+        renderVaultBreadcrumbs();
+        renderVaultItems();
+        break;
+      }
+    }
+  }
+
+  function onVaultDrawerKeyDown(e) {
+    const row = e.target.closest && e.target.closest('.excaliup-vault-row');
+    const isTyping = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      if (isTyping && e.target.value) {
+        runVaultDrawerAction('clear-search');
+      } else {
+        closeVaultDrawer();
+      }
+    } else if (e.key === 'ArrowDown' && e.target.id === 'excaliup-vault-search') {
+      e.preventDefault();
+      focusFirstVaultRow();
+    } else if (row && !isTyping) {
+      const rows = [...vaultDrawerElement.querySelectorAll('.excaliup-vault-row')];
+      const index = rows.indexOf(row);
+      const kind = row.dataset.kind;
+      const path = row.dataset.path;
+      let handled = true;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        const next = rows[index + (e.key === 'ArrowDown' ? 1 : -1)];
+        if (next) {
+          row.tabIndex = -1;
+          next.tabIndex = 0;
+          next.focus();
+        } else if (e.key === 'ArrowUp') {
+          const search = document.getElementById('excaliup-vault-search');
+          if (search) search.focus();
+        }
+      } else if (e.key === 'Home' || e.key === 'End') {
+        const next = e.key === 'Home' ? rows[0] : rows[rows.length - 1];
+        if (next) next.focus();
+      } else if (e.key === 'Enter' && e.target === row) {
+        runVaultRowAction('open', kind, path);
+      } else if (e.key === 'F2' && kind === 'file') {
+        renameVaultDrawing(path);
+      } else if (e.key === 'Delete') {
+        runVaultRowAction('delete', kind, path);
+      } else if ((e.key === 'Backspace' || e.key === 'ArrowLeft') && currentVaultRelativePath && vaultCurrentView === 'all') {
+        currentVaultRelativePath = getParentFolder(currentVaultRelativePath);
+        refreshVaultListing(true).then(() => focusFirstVaultRow());
+      } else if (e.key === 'ArrowRight' && kind === 'folder') {
+        runVaultRowAction('open', kind, path);
+      } else if ((e.key === 's' || e.key === 'S') && kind === 'file' && !e.ctrlKey && !e.metaKey) {
+        toggleVaultFavorite(path);
+      } else {
+        handled = false;
+      }
+      if (handled) e.preventDefault();
+    }
+    // Keep Excalidraw's canvas shortcuts (tools, delete, undo…) out of the drawer.
+    e.stopPropagation();
+  }
+
+  function setupVaultDragAndDrop(drawer) {
+    let dragSourcePath = null;
+    const getDropTarget = (e) => e.target.closest && e.target.closest('[data-drop-folder]');
+
+    drawer.addEventListener('dragstart', (e) => {
+      const row = e.target.closest && e.target.closest('.excaliup-vault-row.is-file');
+      if (!row) return;
+      dragSourcePath = row.dataset.path;
+      e.dataTransfer.setData('application/x-excaliup-vault-path', dragSourcePath);
+      e.dataTransfer.effectAllowed = 'move';
+      row.classList.add('is-dragging');
+    });
+    drawer.addEventListener('dragend', (e) => {
+      dragSourcePath = null;
+      const row = e.target.closest && e.target.closest('.excaliup-vault-row');
+      if (row) row.classList.remove('is-dragging');
+      for (const element of drawer.querySelectorAll('.is-drop-target')) element.classList.remove('is-drop-target');
+    });
+    drawer.addEventListener('dragover', (e) => {
+      const target = getDropTarget(e);
+      if (!dragSourcePath || !target) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      if (!target.classList.contains('is-drop-target')) {
+        for (const element of drawer.querySelectorAll('.is-drop-target')) element.classList.remove('is-drop-target');
+        target.classList.add('is-drop-target');
+      }
+    });
+    drawer.addEventListener('dragleave', (e) => {
+      const target = getDropTarget(e);
+      if (target && !target.contains(e.relatedTarget)) target.classList.remove('is-drop-target');
+    });
+    drawer.addEventListener('drop', (e) => {
+      const target = getDropTarget(e);
+      if (!dragSourcePath || !target) return;
+      e.preventDefault();
+      target.classList.remove('is-drop-target');
+      moveVaultDrawing(dragSourcePath, target.dataset.dropFolder);
+      dragSourcePath = null;
+    });
   }
 
   function mountVaultButton() {
@@ -5871,7 +6329,17 @@
       if (vaultStatusButton.previousElementSibling !== mainMenuTrigger) {
         mainMenuTrigger.after(vaultStatusButton);
       }
+      // The trigger is a block-level flex box, so dock the launcher to its
+      // right instead of letting it wrap onto a new line.
+      vaultStatusButton.classList.add('is-docked');
+      vaultStatusButton.style.left = `${mainMenuTrigger.offsetLeft + mainMenuTrigger.offsetWidth + 8}px`;
+      vaultStatusButton.style.top = `${mainMenuTrigger.offsetTop}px`;
+      vaultStatusButton.style.height = `${mainMenuTrigger.offsetHeight || 36}px`;
     } else {
+      vaultStatusButton.classList.remove('is-docked');
+      vaultStatusButton.style.left = '';
+      vaultStatusButton.style.top = '';
+      vaultStatusButton.style.height = '';
       const excalidraw = document.querySelector('.excalidraw');
       if (excalidraw && !document.body.contains(vaultStatusButton)) {
         excalidraw.appendChild(vaultStatusButton);
@@ -5884,143 +6352,131 @@
     if (!excalidraw) return;
     if (document.getElementById('excaliup-vault-btn')) return;
 
-    injectSidebarStyles();
+    injectVaultStyles();
 
     vaultStatusButton = document.createElement('button');
+    vaultStatusButton.type = 'button';
     vaultStatusButton.id = 'excaliup-vault-btn';
     vaultStatusButton.className = 'excaliup-vault-btn';
+    vaultStatusButton.setAttribute('aria-controls', 'excaliup-vault-drawer');
+    vaultStatusButton.setAttribute('aria-expanded', 'false');
     vaultStatusButton.addEventListener('click', () => {
       if (vaultSyncState === 'permission-required' && rootVaultHandle) {
-        Core.requestHandlePermission(rootVaultHandle, true).then((granted) => {
-          if (granted) {
-            setVaultSyncState('synced');
-            toggleVaultDrawer();
-          }
+        requestVaultPermission().then(() => {
+          if (isVaultConnected()) openVaultDrawer();
         });
       } else {
         toggleVaultDrawer();
       }
     });
+    vaultButtonSignature = '';
     mountVaultButton();
 
-    vaultDrawerElement = document.createElement('div');
+    vaultDrawerElement = document.createElement('aside');
     vaultDrawerElement.id = 'excaliup-vault-drawer';
     vaultDrawerElement.className = 'excaliup-vault-drawer';
+    vaultDrawerElement.setAttribute('aria-label', 'Local vault');
+    vaultDrawerElement.setAttribute('aria-hidden', 'true');
+    vaultDrawerElement.inert = true;
     vaultDrawerElement.innerHTML = `
-      <div class="excaliup-vault-header">
-        <h3><iconify-icon icon="lucide:hard-drive"></iconify-icon> Local Vault</h3>
-        <div class="excaliup-vault-header-actions">
-          <button class="excaliup-vault-tool-btn" id="excaliup-vault-change-folder" title="Change Folder">
-            <iconify-icon icon="lucide:folder-sync"></iconify-icon> <span>Change</span>
-          </button>
-          <button class="excaliup-vault-close" id="excaliup-vault-close">✕</button>
+      <header class="excaliup-vault-header">
+        <div class="excaliup-vault-title">
+          <iconify-icon icon="lucide:hard-drive" aria-hidden="true"></iconify-icon>
+          <span>Local Vault</span>
         </div>
-      </div>
+        <div class="excaliup-vault-header-actions">
+          <button type="button" class="excaliup-vault-icon-btn" data-vault-action="refresh" title="Rescan folder" aria-label="Rescan folder">
+            <iconify-icon icon="lucide:refresh-cw" aria-hidden="true"></iconify-icon>
+          </button>
+          <button type="button" class="excaliup-vault-icon-btn" data-vault-action="close" title="Close (Esc)" aria-label="Close vault">
+            <iconify-icon icon="lucide:x" aria-hidden="true"></iconify-icon>
+          </button>
+        </div>
+      </header>
+
+      <section class="excaliup-vault-status" id="excaliup-vault-status" hidden></section>
 
       <div class="excaliup-vault-controls">
-        <div class="excaliup-vault-search-box">
-          <iconify-icon icon="lucide:search"></iconify-icon>
-          <input type="text" id="excaliup-vault-search" placeholder="Search drawings...">
-          <button id="excaliup-vault-search-clear">✕</button>
-        </div>
-
-        <div class="excaliup-vault-actions-row">
-          <button class="excaliup-vault-btn-primary" id="excaliup-vault-new-drawing">
-            <iconify-icon icon="lucide:plus"></iconify-icon> New Drawing
-          </button>
-          <button class="excaliup-vault-btn-secondary" id="excaliup-vault-new-folder">
-            <iconify-icon icon="lucide:folder-plus"></iconify-icon> New Folder
+        <div class="excaliup-vault-search">
+          <iconify-icon icon="lucide:search" aria-hidden="true"></iconify-icon>
+          <input type="text" id="excaliup-vault-search" placeholder="Search all drawings" aria-label="Search drawings" autocomplete="off" spellcheck="false">
+          <button type="button" class="excaliup-vault-search-clear" data-vault-action="clear-search" aria-label="Clear search" title="Clear">
+            <iconify-icon icon="lucide:x" aria-hidden="true"></iconify-icon>
           </button>
         </div>
-
-        <div class="excaliup-vault-tabs">
-          <button class="excaliup-vault-tab active" data-tab="all">
-            All (<span id="excaliup-vault-all-count">0</span>)
+        <div class="excaliup-vault-actions">
+          <button type="button" class="excaliup-vault-button is-primary" data-vault-action="new-drawing">
+            <iconify-icon icon="lucide:plus" aria-hidden="true"></iconify-icon><span>New drawing</span>
           </button>
-          <button class="excaliup-vault-tab" data-tab="favorites">
-            Starred (<span id="excaliup-vault-star-count">0</span>)
+          <button type="button" class="excaliup-vault-button" data-vault-action="new-folder" title="New folder">
+            <iconify-icon icon="lucide:folder-plus" aria-hidden="true"></iconify-icon><span>Folder</span>
           </button>
+        </div>
+        <div class="excaliup-vault-tabs" role="tablist" aria-label="Filter drawings">
+          <button type="button" role="tab" data-vault-tab="all">All <span class="excaliup-vault-count" id="excaliup-vault-count-all">0</span></button>
+          <button type="button" role="tab" data-vault-tab="favorites">Starred <span class="excaliup-vault-count" id="excaliup-vault-count-favorites">0</span></button>
+          <button type="button" role="tab" data-vault-tab="recent">Recent</button>
         </div>
       </div>
 
-      <div class="excaliup-vault-breadcrumbs" id="excaliup-vault-breadcrumbs"></div>
+      <nav class="excaliup-vault-crumbs" id="excaliup-vault-breadcrumbs" aria-label="Folder path" hidden></nav>
+      <div class="excaliup-vault-list" id="excaliup-vault-list" role="list" aria-label="Drawings"></div>
 
-      <div class="excaliup-vault-list" id="excaliup-vault-list"></div>
-
-      <div class="excaliup-vault-footer">
-        <span>🟢 Auto-save active</span>
-        <span id="excaliup-vault-folder-name"></span>
-      </div>
+      <footer class="excaliup-vault-footer">
+        <span id="excaliup-vault-footer-info"></span>
+        <span class="excaliup-vault-hint"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>F2</kbd> rename · <kbd>S</kbd> star</span>
+      </footer>
     `;
     excalidraw.appendChild(vaultDrawerElement);
 
-    const closeBtn = vaultDrawerElement.querySelector('#excaliup-vault-close');
-    if (closeBtn) closeBtn.addEventListener('click', closeVaultDrawer);
-
-    const changeFolderBtn = vaultDrawerElement.querySelector('#excaliup-vault-change-folder');
-    if (changeFolderBtn) changeFolderBtn.addEventListener('click', connectLocalVaultFolder);
-
-    const newDrawBtn = vaultDrawerElement.querySelector('#excaliup-vault-new-drawing');
-    if (newDrawBtn) newDrawBtn.addEventListener('click', createNewVaultDrawing);
-
-    const newFolderBtn = vaultDrawerElement.querySelector('#excaliup-vault-new-folder');
-    if (newFolderBtn) newFolderBtn.addEventListener('click', createNewVaultSubfolder);
+    vaultDrawerElement.addEventListener('click', onVaultDrawerClick);
+    vaultDrawerElement.addEventListener('keydown', onVaultDrawerKeyDown);
+    setupVaultDragAndDrop(vaultDrawerElement);
 
     const searchInput = vaultDrawerElement.querySelector('#excaliup-vault-search');
-    const searchClear = vaultDrawerElement.querySelector('#excaliup-vault-search-clear');
-    if (searchInput) {
-      searchInput.addEventListener('input', (e) => {
-        vaultSearchQuery = e.target.value;
-        renderVaultItems();
-      });
-    }
-    if (searchClear && searchInput) {
-      searchClear.addEventListener('click', () => {
-        searchInput.value = '';
-        vaultSearchQuery = '';
-        renderVaultItems();
-      });
-    }
-
-    const tabs = vaultDrawerElement.querySelectorAll('.excaliup-vault-tab');
-    tabs.forEach(tab => {
-      tab.addEventListener('click', () => {
-        tabs.forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
-        vaultCurrentView = tab.dataset.tab;
-        renderVaultItems();
-      });
+    searchInput.addEventListener('input', (e) => {
+      vaultSearchQuery = e.target.value;
+      vaultDrawerElement.classList.toggle('has-query', !!vaultSearchQuery);
+      renderVaultBreadcrumbs();
+      renderVaultItems();
     });
+
+    renderVaultDrawer();
+    attachVaultChangeListener();
 
     Core.getStoredVaultHandle().then(async (handle) => {
-      if (handle) {
-        rootVaultHandle = handle;
-        const granted = await Core.verifyHandlePermission(handle, true);
-        if (granted) {
-          vaultMetadata = await Core.readVaultMetadata(handle);
-          setVaultSyncState('synced');
-          const folderNameSpan = document.getElementById('excaliup-vault-folder-name');
-          if (folderNameSpan) folderNameSpan.textContent = handle.name;
-        } else {
-          setVaultSyncState('permission-required');
-        }
-      } else {
+      if (!handle) {
         setVaultSyncState('unlinked');
+        renderVaultDrawer();
+        return;
       }
+      rootVaultHandle = handle;
+      const granted = await Core.verifyHandlePermission(handle, true);
+      if (!granted) {
+        setVaultSyncState('permission-required');
+        renderVaultDrawer();
+        return;
+      }
+      vaultMetadata = await Core.readVaultMetadata(handle);
+      setVaultSyncState('synced');
+      await restoreActiveDrawing();
       updateVaultButtonState();
-    }).catch(() => {
+      if (isVaultDrawerOpen) refreshVaultListing(true);
+    }).catch((error) => {
+      console.warn('[Excali Up] Could not restore the vault:', error);
       setVaultSyncState('unlinked');
-      updateVaultButtonState();
+      renderVaultDrawer();
     });
-
-    updateSidebarTheme();
   }
 
   function removeVaultUI() {
+    flushVaultOnExit();
+    detachVaultChangeListener();
     closeActiveVaultPopover();
-    if (activeVaultModal) {
-      activeVaultModal.remove();
-      activeVaultModal = null;
+    closeActiveVaultModal();
+    if (vaultStatusTimer) {
+      clearInterval(vaultStatusTimer);
+      vaultStatusTimer = null;
     }
     if (vaultStatusButton) {
       vaultStatusButton.remove();
@@ -6030,6 +6486,8 @@
       vaultDrawerElement.remove();
       vaultDrawerElement = null;
     }
+    const styles = document.getElementById('excaliup-vault-styles');
+    if (styles) styles.remove();
     isVaultDrawerOpen = false;
   }
 
@@ -6044,18 +6502,50 @@
 
   function openVaultDrawer() {
     if (!vaultDrawerElement) return;
+    vaultDrawerReturnFocus = document.activeElement;
     vaultDrawerElement.classList.add('open');
+    vaultDrawerElement.setAttribute('aria-hidden', 'false');
+    vaultDrawerElement.inert = false;
     isVaultDrawerOpen = true;
+    if (vaultStatusButton) {
+      vaultStatusButton.classList.add('is-open');
+      vaultStatusButton.setAttribute('aria-expanded', 'true');
+    }
+    renderVaultDrawer();
     refreshVaultListing(true);
+    if (!vaultStatusTimer) vaultStatusTimer = setInterval(renderVaultStatusCard, 30000);
+
+    setTimeout(() => {
+      if (!isVaultDrawerOpen || !vaultDrawerElement) return;
+      const target = isVaultConnected()
+        ? vaultDrawerElement.querySelector('#excaliup-vault-search')
+        : vaultDrawerElement.querySelector('.excaliup-vault-empty [data-vault-action]');
+      if (target) target.focus();
+    }, 50);
   }
 
   function closeVaultDrawer() {
     if (!vaultDrawerElement) return;
+    const hadFocus = vaultDrawerElement.contains(document.activeElement);
     vaultDrawerElement.classList.remove('open');
+    vaultDrawerElement.setAttribute('aria-hidden', 'true');
+    vaultDrawerElement.inert = true;
     isVaultDrawerOpen = false;
     closeActiveVaultPopover();
+    if (vaultStatusTimer) {
+      clearInterval(vaultStatusTimer);
+      vaultStatusTimer = null;
+    }
+    if (vaultStatusButton) {
+      vaultStatusButton.classList.remove('is-open');
+      vaultStatusButton.setAttribute('aria-expanded', 'false');
+    }
+    const returnTarget = vaultDrawerReturnFocus && vaultDrawerReturnFocus.isConnected
+      ? vaultDrawerReturnFocus
+      : vaultStatusButton;
+    vaultDrawerReturnFocus = null;
+    if (returnTarget && hadFocus) returnTarget.focus();
   }
 
   checkInstance();
 })();
-
