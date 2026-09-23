@@ -126,6 +126,7 @@ Excali Up injects a script into the page context (MAIN world) to access the unde
 
 * Run the dependency-free unit tests with `node --test`.
 * Build the Chrome Web Store package with `python package.py`; the zip is written to `dist/ExcaliUp-<version>-chrome-web-store.zip`.
+* Store listing text (description, release notes, privacy answers) lives in [`store/listing.md`](store/listing.md).
 
 ---
 
