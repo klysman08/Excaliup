@@ -48,15 +48,14 @@ HOW TO USE
 3. Select an arrow to add an effect, or press B to open the icon library.
 ```
 
-## What's new in 5.5.0
+## What's new in 5.6.0
 
 ```text
-• Redesigned Local Vault that matches Excalidraw's light and dark themes, with starred and recent drawings, search and keyboard shortcuts.
-• Safer saving: drawings are never overwritten by accident.
-• Faster arrow and line effects, and a color option for each effect.
-• The effects toolbar now follows light and dark mode.
-• Insert icons in your stroke color, at small, medium or large size.
-• Option to pause effects when your system asks for reduced motion.
+• Local Vault works with folders synced between computers: the newest version on disk is always the one you see.
+• No more duplicate drawings when the same vault is used on two devices.
+• An open drawing updates by itself when it changes on another device.
+• When a drawing changed in two places, you choose which version to keep, or keep both.
+• Conflict copies made by sync apps are marked and can be resolved from the vault.
 ```
 
 ## Privacy practices

@@ -2,6 +2,17 @@
 
 All notable changes to Excali Up are documented here.
 
+## 5.6.0 — 2026-10-27
+
+### Local Vault
+- Synced vault folders (Syncthing, Dropbox, ...) stay consistent across devices: the file on disk is the source of truth.
+- After a reload, a drawing that changed on another device is loaded from disk instead of being overwritten by the browser's older copy.
+- The last opened drawing is remembered per browser instead of in the shared `.excaliup.json`, which stops duplicates like `Name (2)` from appearing on the other device.
+- Auto-save checks that the file did not change on disk before writing. The open drawing reloads by itself when another device changes it.
+- When a drawing changed both here and on disk, a dialog offers to use the disk version, keep this version, or keep both.
+- A drawing moved or deleted on another device is no longer recreated at its old location.
+- Syncthing conflict copies are badged and can be resolved from the row menu.
+
 ## 5.5.0 — 2026-09-23
 
 ### Local Vault

@@ -509,6 +509,7 @@
   const VAULT_STORE_NAME = 'handles';
   const ROOT_HANDLE_KEY = 'root_vault_directory';
   const VAULT_METADATA_FILENAME = '.excaliup.json';
+  const DEVICE_STATE_KEY = 'device_state';
 
   const DEFAULT_VAULT_METADATA = Object.freeze({
     version: 1,
@@ -563,6 +564,54 @@
       const tx = db.transaction(VAULT_STORE_NAME, 'readwrite');
       const store = tx.objectStore(VAULT_STORE_NAME);
       const req = store.delete(ROOT_HANDLE_KEY);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  // State that belongs to this browser only. The vault folder may be synced
+  // between devices (Syncthing, Dropbox, ...), so anything describing what this
+  // device last saw must never live in `.excaliup.json`.
+  function normalizeVaultDeviceState(source) {
+    const data = source && typeof source === 'object' ? source : {};
+    const baselines = {};
+    if (data.baselines && typeof data.baselines === 'object') {
+      for (const [path, entry] of Object.entries(data.baselines)) {
+        const cleanPath = normalizeVaultPath(path);
+        if (!cleanPath || !entry || typeof entry !== 'object') continue;
+        if (typeof entry.fingerprint !== 'string' || typeof entry.sceneHash !== 'string') continue;
+        baselines[cleanPath] = { fingerprint: entry.fingerprint, sceneHash: entry.sceneHash };
+      }
+    }
+    return {
+      lastOpenedFile: typeof data.lastOpenedFile === 'string' && data.lastOpenedFile
+        ? normalizeVaultPath(data.lastOpenedFile)
+        : null,
+      // Set once `lastOpenedFile` was taken over from `.excaliup.json`.
+      legacyImported: data.legacyImported === true,
+      baselines
+    };
+  }
+
+  async function getVaultDeviceState() {
+    const db = await openVaultDatabase();
+    if (!db) return normalizeVaultDeviceState(null);
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(VAULT_STORE_NAME, 'readonly');
+      const store = tx.objectStore(VAULT_STORE_NAME);
+      const req = store.get(DEVICE_STATE_KEY);
+      req.onsuccess = () => resolve(normalizeVaultDeviceState(req.result));
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function setVaultDeviceState(state) {
+    const db = await openVaultDatabase();
+    if (!db) return;
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(VAULT_STORE_NAME, 'readwrite');
+      const store = tx.objectStore(VAULT_STORE_NAME);
+      const req = store.put(normalizeVaultDeviceState(state), DEVICE_STATE_KEY);
       req.onsuccess = () => resolve();
       req.onerror = () => reject(req.error);
     });
@@ -644,11 +693,13 @@
           size = fileData.size;
           lastModified = fileData.lastModified;
         } catch {}
+        const conflict = parseSyncConflictName(name);
         files.push({
           name,
           path: itemRelPath,
           lastModified,
           size,
+          conflictOf: conflict ? (cleanCurrent ? `${cleanCurrent}/${conflict.originalName}` : conflict.originalName) : null,
           handle
         });
       }
@@ -684,11 +735,13 @@
           size = fileData.size;
           lastModified = fileData.lastModified;
         } catch {}
+        const conflict = parseSyncConflictName(name);
         results.push({
           name,
           path: itemPath,
           lastModified,
-          size
+          size,
+          conflictOf: conflict ? (cleanCurrent ? `${cleanCurrent}/${conflict.originalName}` : conflict.originalName) : null
         });
       }
     }
@@ -742,6 +795,49 @@
     const fileHandle = await dirHandle.getFileHandle(fileName, { create: false });
     const file = await fileHandle.getFile();
     return await file.text();
+  }
+
+  function getFileFingerprint(file) {
+    return file ? `${file.lastModified || 0}:${file.size || 0}` : null;
+  }
+
+  // Reads content and fingerprint from the same File snapshot, so they always
+  // describe the same version even while a sync tool replaces the file.
+  async function readDrawingSnapshot(rootHandle, relativeFilePath) {
+    const cleanPath = normalizeVaultPath(relativeFilePath);
+    const segments = cleanPath.split('/');
+    const fileName = segments.pop();
+    const dirHandle = await resolveDirectoryHandle(rootHandle, segments.join('/'), false);
+    const fileHandle = await dirHandle.getFileHandle(fileName, { create: false });
+    const file = await fileHandle.getFile();
+    return { text: await file.text(), fingerprint: getFileFingerprint(file) };
+  }
+
+  // Returns null when the drawing no longer exists. Handles are resolved again
+  // on every call because sync tools replace files by renaming over them.
+  async function getDrawingFingerprint(rootHandle, relativeFilePath) {
+    const cleanPath = normalizeVaultPath(relativeFilePath);
+    if (!rootHandle || !cleanPath) return null;
+    const segments = cleanPath.split('/');
+    const fileName = segments.pop();
+    try {
+      const dirHandle = await resolveDirectoryHandle(rootHandle, segments.join('/'), false);
+      const fileHandle = await dirHandle.getFileHandle(fileName, { create: false });
+      return getFileFingerprint(await fileHandle.getFile());
+    } catch {
+      return null;
+    }
+  }
+
+  // Syncthing keeps both sides of a conflict as
+  // `Name.sync-conflict-YYYYMMDD-HHMMSS-DEVICE.ext`, next to the original.
+  function parseSyncConflictName(fileName) {
+    if (typeof fileName !== 'string') return null;
+    const match = fileName.match(/^(.+?)\.sync-conflict-(\d{8})-(\d{6})-([A-Z0-9]{7})(\.[^.]+)?$/i);
+    if (!match) return null;
+    const [, base, day, time, device, extension = ''] = match;
+    const date = `${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6, 8)} ${time.slice(0, 2)}:${time.slice(2, 4)}`;
+    return { originalName: `${base}${extension}`, date, device: device.toUpperCase() };
   }
 
   async function writeDrawingFile(rootHandle, relativeFilePath, content) {
@@ -988,6 +1084,13 @@
     normalizeVaultMetadata,
     readVaultMetadata,
     writeVaultMetadata,
+    normalizeVaultDeviceState,
+    getVaultDeviceState,
+    setVaultDeviceState,
+    getFileFingerprint,
+    readDrawingSnapshot,
+    getDrawingFingerprint,
+    parseSyncConflictName,
     readDrawingFile,
     writeDrawingFile,
     deleteDrawingFile,

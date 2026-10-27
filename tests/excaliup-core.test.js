@@ -457,3 +457,64 @@ test('sanitizing names strips leading dots and control characters', () => {
   assert.equal(core.sanitizeFileName('.hidden plan'), 'hidden plan');
   assert.equal(core.sanitizeFileName('tab\tname'), 'tab name');
 });
+
+test('normalizes per-device vault state and drops malformed baselines', () => {
+  const state = core.normalizeVaultDeviceState({
+    lastOpenedFile: '\\work\\plan.excalidraw',
+    legacyImported: true,
+    baselines: {
+      'work//plan.excalidraw': { fingerprint: '10:20', sceneHash: '1:2::' },
+      'broken.excalidraw': { fingerprint: 10 },
+      '': { fingerprint: '1:1', sceneHash: 'x' }
+    }
+  });
+  assert.equal(state.lastOpenedFile, 'work/plan.excalidraw');
+  assert.equal(state.legacyImported, true);
+  assert.deepEqual(state.baselines, { 'work/plan.excalidraw': { fingerprint: '10:20', sceneHash: '1:2::' } });
+
+  const empty = core.normalizeVaultDeviceState(null);
+  assert.deepEqual(empty, { lastOpenedFile: null, legacyImported: false, baselines: {} });
+});
+
+test('fingerprints drawings so changes from other devices are detected', async () => {
+  const vault = createMemoryVault({ 'work/plan.excalidraw': 'v1' });
+  const root = await vault.seed();
+
+  const snapshot = await core.readDrawingSnapshot(root, 'work/plan.excalidraw');
+  assert.equal(snapshot.text, 'v1');
+  assert.equal(snapshot.fingerprint, await core.getDrawingFingerprint(root, 'work/plan.excalidraw'));
+
+  await core.writeDrawingFile(root, 'work/plan.excalidraw', 'version two');
+  assert.notEqual(await core.getDrawingFingerprint(root, 'work/plan.excalidraw'), snapshot.fingerprint);
+
+  assert.equal(await core.getDrawingFingerprint(root, 'work/missing.excalidraw'), null);
+  assert.equal(await core.getDrawingFingerprint(root, 'nowhere/plan.excalidraw'), null);
+  assert.equal(core.getFileFingerprint({ lastModified: 5, size: 7 }), '5:7');
+  assert.equal(core.getFileFingerprint(null), null);
+});
+
+test('recognizes Syncthing conflict copies', async () => {
+  assert.deepEqual(core.parseSyncConflictName('Plan.sync-conflict-20261026-143005-ABCDEFG.excalidraw'), {
+    originalName: 'Plan.excalidraw',
+    date: '2026-10-26 14:30',
+    device: 'ABCDEFG'
+  });
+  assert.equal(
+    core.parseSyncConflictName('Plan.excalidraw.sync-conflict-20261026-143005-ABCDEFG.json').originalName,
+    'Plan.excalidraw.json'
+  );
+  assert.equal(core.parseSyncConflictName('Plan (2).excalidraw'), null);
+  assert.equal(core.parseSyncConflictName('Plan.sync-conflict-2026.excalidraw'), null);
+
+  const vault = createMemoryVault({
+    'work/Plan.excalidraw': 'a',
+    'work/Plan.sync-conflict-20261026-143005-ABCDEFG.excalidraw': 'b'
+  });
+  const root = await vault.seed();
+  const listing = await core.scanVaultDirectory(root, 'work');
+  const copy = listing.files.find((file) => file.name.includes('sync-conflict'));
+  assert.equal(copy.conflictOf, 'work/Plan.excalidraw');
+  assert.equal(listing.files.find((file) => file.name === 'Plan.excalidraw').conflictOf, null);
+  const all = await core.scanAllVaultDrawings(root, '');
+  assert.equal(all.filter((file) => file.conflictOf === 'work/Plan.excalidraw').length, 1);
+});

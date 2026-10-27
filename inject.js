@@ -2265,6 +2265,7 @@
       flushVaultOnExit();
       return;
     }
+    checkActiveDrawingOnDisk();
 
     const now = performance.now();
     for (const player of activeGifs.values()) {
@@ -3707,6 +3708,7 @@
         letter-spacing: 0.02em;
         flex-shrink: 0;
       }
+      .excaliup-vault-chip.is-conflict { background: var(--xv-warn); color: #fff; }
 
       /* Empty & onboarding states */
       .excaliup-vault-empty {
@@ -3911,6 +3913,7 @@
       .excaliup-vault-modal-error[hidden] { display: none; }
       .excaliup-vault-modal-actions {
         display: flex;
+        flex-wrap: wrap;
         justify-content: flex-end;
         gap: 8px;
       }
@@ -4788,6 +4791,13 @@
 
   const VAULT_SAVE_DELAY = 1200;
   const VAULT_RECENT_LIMIT = 10;
+  const VAULT_WATCH_INTERVAL = 4000;
+  // What this browser last read from or wrote to each drawing. Kept out of the
+  // vault folder because that folder may be synced between devices.
+  let vaultDeviceState = Core.normalizeVaultDeviceState(null);
+  let vaultWatchTimer = null;
+  let vaultWatchBusy = false;
+  let vaultConflictCount = 0;
   let vaultLastSavedAt = 0;
   let vaultSavePromise = null;
   let vaultSaveQueued = false;
@@ -4849,11 +4859,14 @@
     return path === folderPath || path.startsWith(`${folderPath}/`);
   }
 
-  function getSceneHash(elements, appState, files) {
-    const elCount = (elements || []).length;
-    const versionSum = (elements || []).reduce((acc, el) => acc + (el.version || 0), 0);
+  function getSceneHash(elements, appState) {
+    const liveElements = (elements || []).filter((el) => el && !el.isDeleted);
+    const elCount = liveElements.length;
+    const versionSum = liveElements.reduce((acc, el) => acc + (el.version || 0), 0);
     const bgColor = (appState && appState.viewBackgroundColor) || '';
-    const fileKeys = files ? Object.keys(files).sort().join(',') : '';
+    // Image ids come from the elements, not the file cache: Excalidraw keeps
+    // files of drawings opened earlier and loads them lazily after a reload.
+    const fileKeys = [...new Set(liveElements.map((el) => el.fileId).filter(Boolean))].sort().join(',');
     return `${elCount}:${versionSum}:${bgColor}:${fileKeys}`;
   }
 
@@ -4868,7 +4881,7 @@
 
   function getCurrentSceneHash() {
     const scene = getCurrentScene();
-    return getSceneHash(scene.elements, scene.appState, scene.files);
+    return getSceneHash(scene.elements, scene.appState);
   }
 
   function getSceneName() {
@@ -4987,6 +5000,69 @@
     vaultStatusButton.setAttribute('aria-label', `Local vault: ${info.label}. ${info.tooltip}`);
   }
 
+  // --- Device state ---
+
+  function persistVaultDeviceState() {
+    Core.setVaultDeviceState(vaultDeviceState).catch((err) => {
+      console.warn('[Excali Up] Could not store the vault device state:', err);
+    });
+  }
+
+  async function loadVaultDeviceState() {
+    try {
+      vaultDeviceState = await Core.getVaultDeviceState();
+    } catch {
+      vaultDeviceState = Core.normalizeVaultDeviceState(null);
+    }
+    // Earlier versions kept the last drawing in the shared `.excaliup.json`,
+    // where a synced folder hands one device the other device's drawing.
+    if (!vaultDeviceState.legacyImported) {
+      if (!vaultDeviceState.lastOpenedFile) vaultDeviceState.lastOpenedFile = vaultMetadata.lastOpenedFile;
+      vaultDeviceState.legacyImported = true;
+      persistVaultDeviceState();
+    }
+    vaultMetadata.lastOpenedFile = null;
+  }
+
+  function getVaultBaseline(path) {
+    return (path && vaultDeviceState.baselines[path]) || null;
+  }
+
+  function recordVaultBaseline(path, fingerprint, sceneHash) {
+    if (!path || !fingerprint) return;
+    vaultDeviceState.baselines[path] = { fingerprint, sceneHash };
+    persistVaultDeviceState();
+  }
+
+  // Renames and moves rewrite the file, which changes its fingerprint too.
+  async function refreshVaultBaseline(path) {
+    const baseline = getVaultBaseline(path);
+    const fingerprint = baseline && await Core.getDrawingFingerprint(rootVaultHandle, path);
+    if (fingerprint) recordVaultBaseline(path, fingerprint, baseline.sceneHash);
+  }
+
+  function setLastOpenedDrawing(path) {
+    vaultDeviceState.lastOpenedFile = path || null;
+    persistVaultDeviceState();
+  }
+
+  // Follows renames and moves of a drawing or folder. A null `toPath` forgets
+  // everything at or below `fromPath`.
+  function moveVaultDeviceReferences(fromPath, toPath) {
+    const { baselines } = vaultDeviceState;
+    for (const path of Object.keys(baselines)) {
+      if (!isVaultPathInside(path, fromPath)) continue;
+      const entry = baselines[path];
+      delete baselines[path];
+      if (toPath) baselines[toPath + path.slice(fromPath.length)] = entry;
+    }
+    const last = vaultDeviceState.lastOpenedFile;
+    if (last && isVaultPathInside(last, fromPath)) {
+      vaultDeviceState.lastOpenedFile = toPath ? toPath + last.slice(fromPath.length) : null;
+    }
+    persistVaultDeviceState();
+  }
+
   // --- Saving ---
 
   async function resolveAutoSavePath() {
@@ -4996,17 +5072,33 @@
     return Core.getUniqueDrawingPath(rootVaultHandle, joinVaultPath(currentVaultRelativePath, baseName));
   }
 
+  async function writeVaultScene(path, scene, hash) {
+    const jsonContent = Core.serializeExcalidrawScene(scene);
+    const fileHandle = await Core.writeDrawingFile(rootVaultHandle, path, jsonContent);
+    recordVaultBaseline(path, Core.getFileFingerprint(await fileHandle.getFile()), hash);
+    updateVaultListingEntry(path, jsonContent.length);
+  }
+
+  async function readDiskFingerprint(path) {
+    const fingerprint = await Core.getDrawingFingerprint(rootVaultHandle, path);
+    if (fingerprint) return fingerprint;
+    // Sync apps replace files by renaming over them; look again before
+    // treating the drawing as gone.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    return Core.getDrawingFingerprint(rootVaultHandle, path);
+  }
+
   // Writes the current scene to the active drawing. Never throws.
   async function writeActiveDrawing(force = false) {
     if (!vaultCanSave()) return;
-    const { elements, appState, files } = getCurrentScene();
-    const hash = getSceneHash(elements, appState, files);
+    const scene = getCurrentScene();
+    const hash = getSceneHash(scene.elements, scene.appState);
     if (!force && hash === lastSavedSceneHash) {
       if (vaultSyncState === 'pending') setVaultSyncState('synced');
       return;
     }
     // Do not create a file for an empty scene that was never saved.
-    if (!activeDrawingRelativePath && elements.length === 0) {
+    if (!activeDrawingRelativePath && scene.elements.length === 0) {
       lastSavedSceneHash = hash;
       setVaultSyncState('synced');
       return;
@@ -5014,19 +5106,29 @@
 
     setVaultSyncState('saving');
     try {
+      if (activeDrawingRelativePath) {
+        // Never write over a version this browser has not seen: another device
+        // may have changed or removed the file since it was last read or saved.
+        const path = activeDrawingRelativePath;
+        const fingerprint = await readDiskFingerprint(path);
+        const baseline = getVaultBaseline(path);
+        if (!fingerprint) {
+          detachMissingActiveDrawing();
+          return;
+        }
+        if (baseline && fingerprint !== baseline.fingerprint) {
+          await reconcileActiveDrawing(path);
+          return;
+        }
+      }
       const isNewFile = !activeDrawingRelativePath;
       const targetPath = await resolveAutoSavePath();
-      const jsonContent = Core.serializeExcalidrawScene({ elements, appState, files });
-      await Core.writeDrawingFile(rootVaultHandle, targetPath, jsonContent);
+      await writeVaultScene(targetPath, scene, hash);
       activeDrawingRelativePath = targetPath;
       lastSavedSceneHash = hash;
       vaultLastSavedAt = Date.now();
-      if (isNewFile) {
-        vaultMetadata.lastOpenedFile = targetPath;
-        await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
-      }
+      if (isNewFile) setLastOpenedDrawing(targetPath);
       setVaultSyncState(getCurrentSceneHash() === hash ? 'synced' : 'pending');
-      updateVaultListingEntry(targetPath, jsonContent.length);
     } catch (err) {
       console.error('[Excali Up] Vault auto-save failed:', err);
       const hasPerm = await Core.verifyHandlePermission(rootVaultHandle, true);
@@ -5149,9 +5251,156 @@
     }
   }
 
-  // After a reload Excalidraw restores its own copy of the scene. Link it back
-  // to the drawing it was saved from, but only when the scene is clearly the
-  // same drawing (shared element ids), so another scene can never overwrite it.
+  // --- Disk sync ---
+
+  // Shows the drawing as it is on disk and makes it the active one. Callers
+  // pause auto-save first. Returns false when the file is not a drawing.
+  async function loadDrawingFromDisk(relativePath, { keepViewport = false } = {}) {
+    const path = Core.normalizeVaultPath(relativePath);
+    const snapshot = await Core.readDrawingSnapshot(rootVaultHandle, path);
+    const scene = Core.parseExcalidrawScene(snapshot.text);
+    if (!scene) return false;
+
+    const appState = { name: getDrawingDisplayName(path) };
+    if (typeof scene.appState.viewBackgroundColor === 'string') {
+      appState.viewBackgroundColor = scene.appState.viewBackgroundColor;
+    }
+    const files = Object.values(scene.files || {}).filter((file) => file && file.id && file.dataURL);
+    if (files.length && typeof currentApp.api.addFiles === 'function') currentApp.api.addFiles(files);
+    replaceScene(scene.elements, appState);
+
+    activeDrawingRelativePath = path;
+    lastSavedSceneHash = getCurrentSceneHash();
+    vaultLastSavedAt = 0;
+    if (!keepViewport && typeof currentApp.scrollToContent === 'function' && scene.elements.length) {
+      try {
+        currentApp.scrollToContent(undefined, { fitToContent: true });
+      } catch {}
+    }
+    recordVaultBaseline(path, snapshot.fingerprint, lastSavedSceneHash);
+    setLastOpenedDrawing(path);
+    setVaultSyncState('synced');
+    return true;
+  }
+
+  // The active file was moved or deleted outside this browser, often by a
+  // sync app mirroring another device. Recreating it would undo that move on
+  // every device, so the canvas is only saved again once it is edited.
+  function detachMissingActiveDrawing() {
+    const path = activeDrawingRelativePath;
+    moveVaultDeviceReferences(path, null);
+    activeDrawingRelativePath = null;
+    lastSavedSceneHash = getCurrentSceneHash();
+    setVaultSyncState('synced');
+    showToast(`“${getDrawingDisplayName(path)}” was moved or deleted on disk`);
+    refreshVaultListing(true);
+  }
+
+  // The active drawing changed on disk behind this browser's back. An
+  // unedited canvas follows the disk; an edited one asks which version wins.
+  async function reconcileActiveDrawing(path) {
+    const baseline = getVaultBaseline(path);
+    if (baseline && getCurrentSceneHash() === baseline.sceneHash) {
+      if (await loadDrawingFromDisk(path, { keepViewport: true })) {
+        showToast(`Updated “${getDrawingDisplayName(path)}” from disk`);
+      }
+      return;
+    }
+    await resolveVaultConflict(path);
+  }
+
+  function askVaultConflictChoice(name) {
+    return new Promise((resolve) => {
+      openVaultModal({
+        icon: 'lucide:git-compare-arrows',
+        title: 'Drawing changed in two places',
+        description: `“${name}” was changed on disk (for example on another device) and also here. Keeping both saves this version as a separate drawing.`,
+        confirmText: 'Keep both',
+        actions: [
+          { id: 'disk', label: 'Use disk version' },
+          { id: 'local', label: 'Keep this version' }
+        ],
+        dismissible: false,
+        onAction: resolve,
+        onConfirm: () => resolve('both'),
+        // Closed by something else (another dialog, leaving Excalidraw): the
+        // choice that loses nothing.
+        onClose: () => resolve('both')
+      });
+    });
+  }
+
+  function formatConflictStamp(date) {
+    const pad = (value) => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}-${pad(date.getMinutes())}`;
+  }
+
+  // Both this canvas and the file on disk changed since they were last in step.
+  async function resolveVaultConflict(path) {
+    const name = getDrawingDisplayName(path);
+    const choice = await askVaultConflictChoice(name);
+    if (choice === 'disk') {
+      await loadDrawingFromDisk(path, { keepViewport: true });
+      showToast(`Loaded “${name}” from disk`);
+      return;
+    }
+
+    const scene = getCurrentScene();
+    const hash = getSceneHash(scene.elements, scene.appState);
+    if (choice === 'local') {
+      await writeVaultScene(path, scene, hash);
+      activeDrawingRelativePath = path;
+      lastSavedSceneHash = hash;
+      vaultLastSavedAt = Date.now();
+      setLastOpenedDrawing(path);
+      setVaultSyncState('synced');
+      showToast(`Kept this version of “${name}”`);
+      return;
+    }
+
+    const copyPath = await Core.getUniqueDrawingPath(
+      rootVaultHandle,
+      joinVaultPath(getParentFolder(path), `${name} (conflict ${formatConflictStamp(new Date())}).excalidraw`)
+    );
+    await writeVaultScene(copyPath, scene, hash);
+    await loadDrawingFromDisk(path, { keepViewport: true });
+    refreshVaultListing(true);
+    showToast(`Your version was saved as “${getDrawingDisplayName(copyPath)}”`);
+  }
+
+  // Picks up changes a sync app made to the open drawing while it was open.
+  async function checkActiveDrawingOnDisk() {
+    if (vaultWatchBusy || document.hidden || !vaultCanSave()) return;
+    if (vaultOperationDepth > 0 || vaultSavePromise || activeVaultModal) return;
+    const path = activeDrawingRelativePath;
+    const baseline = getVaultBaseline(path);
+    if (!baseline) return;
+
+    vaultWatchBusy = true;
+    try {
+      if (await Core.getDrawingFingerprint(rootVaultHandle, path) === baseline.fingerprint) return;
+      await withVaultLock(async () => {
+        if (activeDrawingRelativePath !== path) return;
+        const fingerprint = await readDiskFingerprint(path);
+        if (!fingerprint) {
+          detachMissingActiveDrawing();
+          return;
+        }
+        const latest = getVaultBaseline(path);
+        if (latest && fingerprint === latest.fingerprint) return;
+        await reconcileActiveDrawing(path);
+      });
+    } catch (err) {
+      console.warn('[Excali Up] Could not check the drawing on disk:', err);
+    } finally {
+      vaultWatchBusy = false;
+    }
+  }
+
+  // After a reload Excalidraw restores its own copy of the scene, which is
+  // older than the file when another device changed it through a synced
+  // folder. The file wins unless only this canvas changed; when both changed
+  // the user decides. A scene that is not the last drawing is never linked.
   function restoreActiveDrawing() {
     // Auto-save stays paused until we know which file the scene belongs to.
     return withVaultLock(restoreActiveDrawingUnlocked);
@@ -5160,26 +5409,63 @@
   async function restoreActiveDrawingUnlocked() {
     activeDrawingRelativePath = null;
     lastSavedSceneHash = '';
-    const lastPath = vaultMetadata.lastOpenedFile;
+    const lastPath = vaultDeviceState.lastOpenedFile;
     if (!lastPath || !currentApp || !currentApp.api) return;
 
     try {
       await waitForSceneHydration();
-      const scene = Core.parseExcalidrawScene(await Core.readDrawingFile(rootVaultHandle, lastPath));
-      if (!scene) return;
       const current = getCurrentScene();
+      const localHash = getSceneHash(current.elements, current.appState);
+      let snapshot = null;
+      try {
+        snapshot = await Core.readDrawingSnapshot(rootVaultHandle, lastPath);
+      } catch {}
+      const scene = snapshot && Core.parseExcalidrawScene(snapshot.text);
+      if (!scene) {
+        // Moved or deleted outside this browser: save the canvas only once it
+        // is edited, so the old file is not brought back.
+        moveVaultDeviceReferences(lastPath, null);
+        lastSavedSceneHash = localHash;
+        return;
+      }
+
+      const path = Core.normalizeVaultPath(lastPath);
       const currentIds = new Set(current.elements.map((element) => element.id));
       const fileElements = scene.elements.filter((element) => element && !element.isDeleted);
-      const sameDrawing = fileElements.length === 0 || fileElements.some((element) => currentIds.has(element.id));
-      if (!sameDrawing) return;
+      const sameDrawing = current.elements.length === 0 ||
+        fileElements.length === 0 ||
+        fileElements.some((element) => currentIds.has(element.id));
+      if (!sameDrawing) {
+        lastSavedSceneHash = localHash;
+        return;
+      }
 
-      activeDrawingRelativePath = Core.normalizeVaultPath(lastPath);
-      const fileHash = getSceneHash(fileElements, scene.appState, scene.files);
-      const currentHash = getSceneHash(current.elements, current.appState, current.files);
-      lastSavedSceneHash = fileHash === currentHash ? currentHash : '';
-      if (!lastSavedSceneHash && current.elements.length > 0) scheduleVaultAutoSave();
-    } catch {
-      // The last drawing was moved or deleted outside the extension.
+      const diskHash = getSceneHash(fileElements, scene.appState);
+      if (localHash === diskHash) {
+        activeDrawingRelativePath = path;
+        lastSavedSceneHash = localHash;
+        recordVaultBaseline(path, snapshot.fingerprint, localHash);
+        return;
+      }
+
+      // Without a baseline (first run after an update) there is no telling
+      // which side is newer, so both count as changed.
+      const baseline = getVaultBaseline(path);
+      const diskChanged = !baseline || snapshot.fingerprint !== baseline.fingerprint;
+      const localChanged = !baseline || localHash !== baseline.sceneHash;
+      if (!diskChanged) {
+        // The tab closed before its last save reached the disk.
+        activeDrawingRelativePath = path;
+        scheduleVaultAutoSave();
+      } else if (!localChanged) {
+        if (await loadDrawingFromDisk(path, { keepViewport: true })) {
+          showToast(`Loaded the latest “${getDrawingDisplayName(path)}” from disk`);
+        }
+      } else {
+        await resolveVaultConflict(path);
+      }
+    } catch (err) {
+      console.warn('[Excali Up] Could not restore the last drawing:', err);
     }
   }
 
@@ -5202,10 +5488,23 @@
     if (!handle) return;
 
     try {
+      let sameFolder = false;
+      if (rootVaultHandle && typeof rootVaultHandle.isSameEntry === 'function') {
+        sameFolder = await rootVaultHandle.isSameEntry(handle).catch(() => false);
+      }
       await withVaultLock(async () => {
         await Core.setStoredVaultHandle(handle);
         rootVaultHandle = handle;
         vaultMetadata = await Core.readVaultMetadata(handle);
+        if (sameFolder) {
+          await loadVaultDeviceState();
+        } else {
+          // A different folder: what this device saw in the old one is moot,
+          // and the folder's own `lastOpenedFile` belongs to whoever wrote it.
+          vaultDeviceState = Core.normalizeVaultDeviceState({ legacyImported: true });
+          vaultMetadata.lastOpenedFile = null;
+          persistVaultDeviceState();
+        }
         currentVaultRelativePath = '';
         vaultSearchQuery = '';
         activeDrawingRelativePath = null;
@@ -5213,7 +5512,12 @@
         vaultLastSavedAt = 0;
         setVaultSyncState('synced');
       }, { flush: true });
-      await saveVaultNow(false);
+      // Picking the same folder again must not save the open drawing twice.
+      if (sameFolder) {
+        await restoreActiveDrawing();
+      } else {
+        await saveVaultNow(false);
+      }
       await refreshVaultListing(true);
       showToast(`Connected to “${handle.name}”`);
     } catch (err) {
@@ -5230,6 +5534,7 @@
       return;
     }
     vaultMetadata = await Core.readVaultMetadata(rootVaultHandle);
+    await loadVaultDeviceState();
     setVaultSyncState('synced');
     await restoreActiveDrawing();
     await refreshVaultListing(true);
@@ -5245,32 +5550,7 @@
     }
 
     try {
-      const opened = await withVaultLock(async () => {
-        const scene = Core.parseExcalidrawScene(await Core.readDrawingFile(rootVaultHandle, relativePath));
-        if (!scene) return false;
-
-        const name = getDrawingDisplayName(relativePath);
-        const appState = { name };
-        if (typeof scene.appState.viewBackgroundColor === 'string') {
-          appState.viewBackgroundColor = scene.appState.viewBackgroundColor;
-        }
-        const files = Object.values(scene.files || {}).filter((file) => file && file.id && file.dataURL);
-        if (files.length && typeof currentApp.api.addFiles === 'function') currentApp.api.addFiles(files);
-        replaceScene(scene.elements, appState);
-
-        activeDrawingRelativePath = Core.normalizeVaultPath(relativePath);
-        lastSavedSceneHash = getCurrentSceneHash();
-        vaultLastSavedAt = 0;
-        if (typeof currentApp.scrollToContent === 'function' && scene.elements.length) {
-          try {
-            currentApp.scrollToContent(undefined, { fitToContent: true });
-          } catch {}
-        }
-        vaultMetadata.lastOpenedFile = activeDrawingRelativePath;
-        await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
-        setVaultSyncState('synced');
-        return true;
-      }, { flush: true });
+      const opened = await withVaultLock(() => loadDrawingFromDisk(relativePath), { flush: true });
 
       if (!opened) {
         showToast('That file is not a valid Excalidraw drawing');
@@ -5340,7 +5620,7 @@
         try {
           await withVaultLock(async () => {
             const background = (currentApp.state && currentApp.state.viewBackgroundColor) || '#ffffff';
-            await Core.writeDrawingFile(rootVaultHandle, targetPath, Core.serializeExcalidrawScene({
+            const fileHandle = await Core.writeDrawingFile(rootVaultHandle, targetPath, Core.serializeExcalidrawScene({
               elements: [],
               appState: { name: displayName, viewBackgroundColor: background },
               files: {}
@@ -5349,8 +5629,8 @@
             activeDrawingRelativePath = targetPath;
             lastSavedSceneHash = getCurrentSceneHash();
             vaultLastSavedAt = Date.now();
-            vaultMetadata.lastOpenedFile = targetPath;
-            await Core.writeVaultMetadata(rootVaultHandle, vaultMetadata);
+            recordVaultBaseline(targetPath, Core.getFileFingerprint(await fileHandle.getFile()), lastSavedSceneHash);
+            setLastOpenedDrawing(targetPath);
             currentVaultRelativePath = folder;
             vaultCurrentView = 'all';
             setVaultSyncState('synced');
@@ -5401,7 +5681,7 @@
 
   function replaceVaultPathReferences(fromPath, toPath) {
     vaultMetadata.favorites = (vaultMetadata.favorites || []).map((path) => (path === fromPath ? toPath : path));
-    if (vaultMetadata.lastOpenedFile === fromPath) vaultMetadata.lastOpenedFile = toPath;
+    moveVaultDeviceReferences(fromPath, toPath);
     if (activeDrawingRelativePath === fromPath) activeDrawingRelativePath = toPath;
   }
 
@@ -5450,6 +5730,7 @@
             await Core.renameDrawingFile(rootVaultHandle, relativePath, targetPath);
             const wasActive = activeDrawingRelativePath === relativePath;
             replaceVaultPathReferences(relativePath, targetPath);
+            await refreshVaultBaseline(targetPath);
             if (wasActive && currentApp && currentApp.api) {
               currentApp.api.updateScene({ appState: { name: newName }, captureUpdate: 'NEVER' });
             }
@@ -5498,6 +5779,7 @@
         const moveResult = await Core.moveDrawingFile(rootVaultHandle, sourceRelativePath, targetRelativeFolderPath);
         if (moveResult.moved) {
           replaceVaultPathReferences(sourceRelativePath, moveResult.newRelativePath);
+          await refreshVaultBaseline(moveResult.newRelativePath);
           await saveVaultMetadata();
         }
         return moveResult;
@@ -5550,7 +5832,7 @@
           await withVaultLock(async () => {
             await Core.deleteDrawingFile(rootVaultHandle, relativePath);
             vaultMetadata.favorites = (vaultMetadata.favorites || []).filter((path) => path !== relativePath);
-            if (vaultMetadata.lastOpenedFile === relativePath) vaultMetadata.lastOpenedFile = null;
+            moveVaultDeviceReferences(relativePath, null);
             if (activeDrawingRelativePath === relativePath) {
               activeDrawingRelativePath = null;
               lastSavedSceneHash = getCurrentSceneHash();
@@ -5562,6 +5844,49 @@
         } catch (err) {
           console.error('[Excali Up] Delete failed:', err);
           showToast('Could not delete the drawing');
+        }
+      }
+    });
+  }
+
+  function getConflictOriginalPath(path) {
+    const conflict = Core.parseSyncConflictName(String(path || '').split('/').pop());
+    return conflict ? joinVaultPath(getParentFolder(path), conflict.originalName) : null;
+  }
+
+  // Replaces a drawing with the copy a sync app (Syncthing) kept from the
+  // other device, then removes the copy.
+  function useVaultConflictCopy(conflictPath) {
+    const originalPath = getConflictOriginalPath(conflictPath);
+    if (!rootVaultHandle || !originalPath) return;
+    const name = getDrawingDisplayName(originalPath);
+    const { date } = Core.parseSyncConflictName(conflictPath.split('/').pop());
+
+    openVaultModal({
+      icon: 'lucide:check-check',
+      tone: 'danger',
+      title: 'Use this version?',
+      description: `The conflict copy from ${date} replaces “${name}”, and the copy is removed. The current “${name}” is overwritten.`,
+      confirmText: 'Use this version',
+      onConfirm: async () => {
+        const reopen = activeDrawingRelativePath === originalPath || activeDrawingRelativePath === conflictPath;
+        try {
+          await withVaultLock(async () => {
+            const content = await Core.readDrawingFile(rootVaultHandle, conflictPath);
+            if (!Core.parseExcalidrawScene(content)) throw new Error('The conflict copy is not a drawing');
+            await Core.writeDrawingFile(rootVaultHandle, originalPath, content);
+            await Core.deleteDrawingFile(rootVaultHandle, conflictPath);
+            moveVaultDeviceReferences(conflictPath, null);
+            vaultMetadata.favorites = (vaultMetadata.favorites || []).filter((path) => path !== conflictPath);
+            await saveVaultMetadata();
+            if (reopen) await loadDrawingFromDisk(originalPath, { keepViewport: true });
+          }, { flush: reopen });
+          await refreshVaultListing(true);
+          showToast(`“${name}” now uses the conflict copy`);
+        } catch (err) {
+          console.error('[Excali Up] Resolving the conflict copy failed:', err);
+          showToast('Could not use that version');
+          refreshVaultListing(true);
         }
       }
     });
@@ -5585,9 +5910,7 @@
           await withVaultLock(async () => {
             await Core.deleteVaultFolder(rootVaultHandle, folderPath, true);
             vaultMetadata.favorites = (vaultMetadata.favorites || []).filter((path) => !isVaultPathInside(path, folderPath));
-            if (vaultMetadata.lastOpenedFile && isVaultPathInside(vaultMetadata.lastOpenedFile, folderPath)) {
-              vaultMetadata.lastOpenedFile = null;
-            }
+            moveVaultDeviceReferences(folderPath, null);
             if (activeDrawingRelativePath && isVaultPathInside(activeDrawingRelativePath, folderPath)) {
               activeDrawingRelativePath = null;
               lastSavedSceneHash = getCurrentSceneHash();
@@ -5632,6 +5955,13 @@
       if (requestId !== vaultListingRequestId) return;
       vaultDirectoryData = directory;
       vaultAllDrawings = allDrawings;
+      const conflictCount = allDrawings.filter((file) => file.conflictOf).length;
+      if (conflictCount > vaultConflictCount) {
+        showToast(conflictCount === 1
+          ? 'Your sync app kept a conflict copy. Use its menu to resolve it.'
+          : `Your sync app kept ${conflictCount} conflict copies. Use their menus to resolve them.`);
+      }
+      vaultConflictCount = conflictCount;
     } catch (err) {
       if (requestId !== vaultListingRequestId) return;
       console.error('[Excali Up] Failed to scan vault:', err);
@@ -5815,11 +6145,12 @@
   function renderFileRow(file, showPath, favorites) {
     const isStarred = favorites.has(file.path);
     const isActive = activeDrawingRelativePath === file.path;
-    const name = getDrawingDisplayName(file.path);
+    const conflict = file.conflictOf ? Core.parseSyncConflictName(file.name) : null;
+    const name = getDrawingDisplayName(file.conflictOf || file.path);
     const folder = getParentFolder(file.path);
     const meta = [
       showPath ? (folder || 'Vault root') : '',
-      formatFileDate(file.lastModified),
+      conflict ? `Conflict copy from ${conflict.date}` : formatFileDate(file.lastModified),
       formatBytes(file.size)
     ].filter(Boolean).join(' · ');
 
@@ -5832,12 +6163,31 @@
           <span class="excaliup-vault-row-name">${escapeHtml(name)}</span>
           <span class="excaliup-vault-row-meta">${escapeHtml(meta)}</span>
         </span>
+        ${conflict ? '<span class="excaliup-vault-chip is-conflict" title="Kept by your sync app when both devices changed this drawing">Conflict</span>' : ''}
         ${isActive ? '<span class="excaliup-vault-chip">Open</span>' : ''}
         <button type="button" class="excaliup-vault-row-menu" data-vault-action="menu" aria-label="Actions for ${escapeHtml(name)}" title="Actions">
           <iconify-icon icon="lucide:more-horizontal" aria-hidden="true"></iconify-icon>
         </button>
       </div>
     `;
+  }
+
+  // Lists each sync conflict copy right below the drawing it belongs to.
+  function groupVaultConflictCopies(files) {
+    const copies = files.filter((file) => file.conflictOf);
+    if (!copies.length) return files;
+    const result = files.filter((file) => !file.conflictOf);
+    for (const copy of copies) {
+      const index = result.findIndex((file) => file.path === copy.conflictOf);
+      if (index === -1) {
+        result.push(copy);
+        continue;
+      }
+      let at = index + 1;
+      while (at < result.length && result[at].conflictOf === copy.conflictOf) at++;
+      result.splice(at, 0, copy);
+    }
+    return result;
   }
 
   function renderVaultItems() {
@@ -5901,7 +6251,7 @@
     }
     if (files.length) {
       html += `<div class="excaliup-vault-section-label">${escapeHtml(filesLabel)}</div>`;
-      html += files.map((file) => renderFileRow(file, showPath, favorites)).join('');
+      html += groupVaultConflictCopies(files).map((file) => renderFileRow(file, showPath, favorites)).join('');
     }
 
     const focusedPath = document.activeElement && document.activeElement.closest &&
@@ -5944,6 +6294,13 @@
       ? [
         { action: 'open', icon: 'lucide:folder-open', label: 'Open folder' },
         { action: 'delete', icon: 'lucide:trash-2', label: 'Delete folder', danger: true }
+      ]
+      : getConflictOriginalPath(path)
+      ? [
+        { action: 'open', icon: 'lucide:square-arrow-out-up-right', label: 'Open', hint: 'Enter' },
+        { action: 'use-conflict', icon: 'lucide:check-check', label: 'Use this version' },
+        { separator: true },
+        { action: 'delete', icon: 'lucide:trash-2', label: 'Discard copy', hint: 'Del', danger: true }
       ]
       : [
         { action: 'open', icon: 'lucide:square-arrow-out-up-right', label: 'Open', hint: 'Enter' },
@@ -6003,16 +6360,20 @@
     if (first) first.focus();
   }
 
-  function closeActiveVaultModal() {
+  // `onClose` runs only when the dialog closes without one of its buttons.
+  function closeActiveVaultModal(notify = true) {
     if (!activeVaultModal) return;
-    const { overlay, returnFocus } = activeVaultModal;
+    const { overlay, returnFocus, onClose } = activeVaultModal;
     overlay.remove();
     activeVaultModal = null;
     if (returnFocus && returnFocus.isConnected) returnFocus.focus();
+    if (notify && onClose) onClose();
   }
 
   // One modal for prompts, pickers and confirmations. `validate` may be async
-  // and returns an error message (kept inline) or an empty string.
+  // and returns an error message (kept inline) or an empty string. `actions`
+  // adds buttons beside Confirm that call `onAction(id)`; a dialog that is not
+  // `dismissible` has no Cancel and ignores Escape and outside clicks.
   function openVaultModal({
     icon = 'lucide:file-pen-line',
     tone = 'default',
@@ -6020,8 +6381,12 @@
     description = '',
     fields = [],
     confirmText = 'Confirm',
+    actions = [],
+    dismissible = true,
     validate,
-    onConfirm
+    onConfirm,
+    onAction,
+    onClose
   }) {
     closeActiveVaultModal();
     closeActiveVaultPopover();
@@ -6052,7 +6417,8 @@
         ${fieldsHtml ? `<div class="excaliup-vault-modal-fields">${fieldsHtml}</div>` : ''}
         <div class="excaliup-vault-modal-error" role="alert" hidden></div>
         <div class="excaliup-vault-modal-actions">
-          <button type="button" class="excaliup-vault-button" data-modal-action="cancel">Cancel</button>
+          ${dismissible ? '<button type="button" class="excaliup-vault-button" data-modal-action="cancel">Cancel</button>' : ''}
+          ${actions.map((action) => `<button type="button" class="excaliup-vault-button" data-modal-action="extra" data-modal-extra="${escapeHtml(action.id)}">${escapeHtml(action.label)}</button>`).join('')}
           <button type="button" class="excaliup-vault-button ${tone === 'danger' ? 'is-danger' : 'is-primary'}" data-modal-action="confirm">${escapeHtml(confirmText)}</button>
         </div>
       </div>
@@ -6082,7 +6448,7 @@
           if (firstInput) firstInput.focus();
           return;
         }
-        closeActiveVaultModal();
+        closeActiveVaultModal(false);
         await onConfirm(values);
       } finally {
         busy = false;
@@ -6093,9 +6459,15 @@
     overlay.addEventListener('click', (e) => {
       const action = e.target.closest('[data-modal-action]');
       if (action) {
-        if (action.dataset.modalAction === 'confirm') confirm();
-        else closeActiveVaultModal();
-      } else if (e.target === overlay) {
+        if (action.dataset.modalAction === 'confirm') {
+          confirm();
+        } else if (action.dataset.modalAction === 'extra') {
+          closeActiveVaultModal(false);
+          if (onAction) onAction(action.dataset.modalExtra);
+        } else {
+          closeActiveVaultModal();
+        }
+      } else if (e.target === overlay && dismissible) {
         closeActiveVaultModal();
       }
     });
@@ -6105,7 +6477,7 @@
     overlay.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        closeActiveVaultModal();
+        if (dismissible) closeActiveVaultModal();
       } else if (e.key === 'Enter' && e.target.tagName !== 'BUTTON') {
         e.preventDefault();
         confirm();
@@ -6123,7 +6495,7 @@
       e.stopPropagation();
     });
 
-    activeVaultModal = { overlay, returnFocus: document.activeElement };
+    activeVaultModal = { overlay, returnFocus: document.activeElement, onClose };
     container.appendChild(overlay);
     const firstInput = controls.find((control) => control.tagName === 'INPUT') || controls[0];
     if (firstInput) {
@@ -6157,6 +6529,7 @@
       case 'duplicate': duplicateVaultDrawing(path); break;
       case 'delete': deleteVaultDrawing(path); break;
       case 'star': toggleVaultFavorite(path); break;
+      case 'use-conflict': useVaultConflictCopy(path); break;
     }
   }
 
@@ -6443,6 +6816,8 @@
 
     renderVaultDrawer();
     attachVaultChangeListener();
+    if (!vaultWatchTimer) vaultWatchTimer = setInterval(checkActiveDrawingOnDisk, VAULT_WATCH_INTERVAL);
+    window.addEventListener('focus', checkActiveDrawingOnDisk);
 
     Core.getStoredVaultHandle().then(async (handle) => {
       if (!handle) {
@@ -6458,6 +6833,7 @@
         return;
       }
       vaultMetadata = await Core.readVaultMetadata(handle);
+      await loadVaultDeviceState();
       setVaultSyncState('synced');
       await restoreActiveDrawing();
       updateVaultButtonState();
@@ -6472,6 +6848,11 @@
   function removeVaultUI() {
     flushVaultOnExit();
     detachVaultChangeListener();
+    if (vaultWatchTimer) {
+      clearInterval(vaultWatchTimer);
+      vaultWatchTimer = null;
+    }
+    window.removeEventListener('focus', checkActiveDrawingOnDisk);
     closeActiveVaultPopover();
     closeActiveVaultModal();
     if (vaultStatusTimer) {

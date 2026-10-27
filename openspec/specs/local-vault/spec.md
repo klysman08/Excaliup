@@ -113,8 +113,47 @@ The system SHALL never replace an existing drawing file as a side effect of savi
 
 #### Scenario: Restoring after reload
 - **WHEN** Excalidraw restores its own scene after a page reload
-- **THEN** the system re-links it to the last opened drawing only if they share element ids; otherwise the scene is saved under a new unique name.
+- **THEN** the system re-links it to the drawing this device last opened only if they share element ids; otherwise the scene is left unlinked and saved under a new unique name once it is edited.
+
+#### Scenario: Confirmed overwrites
+- **WHEN** a file would be replaced by another version
+- **THEN** it only happens after the user picks that version (conflict dialog, "Use this version"), never as a side effect of auto-save.
 
 #### Scenario: Undo after opening a drawing
 - **WHEN** the user opens a drawing from the vault and then presses Undo
 - **THEN** the previous drawing is not restored, because opening a drawing clears the undo history.
+
+### Requirement: Multi-Device Consistency
+The system SHALL treat the files on disk as the source of truth, so a vault folder synced between devices (Syncthing, Dropbox, ...) never loses or silently duplicates changes.
+
+#### Scenario: Per-device state
+- **WHEN** the system records the last opened drawing or what it last read from and wrote to each drawing (file `lastModified` and size, and the scene hash)
+- **THEN** it stores that in the browser's IndexedDB, not in the synced `.excaliup.json`, which only holds favorites.
+
+#### Scenario: Newer file after a reload
+- **WHEN** the page reloads and the last drawing changed on disk while the restored scene did not change since this device last saved it
+- **THEN** the system loads the drawing from disk into the canvas.
+
+#### Scenario: Unsaved local edits after a reload
+- **WHEN** the page reloads and only the restored scene changed since the last save
+- **THEN** the system re-links it and saves it to the drawing.
+
+#### Scenario: Optimistic writes
+- **WHEN** an auto-save is about to write a drawing whose file changed on disk since this device last read or wrote it
+- **THEN** the system does not write and reconciles instead: an unedited canvas reloads from disk, an edited one asks the user.
+
+#### Scenario: Changes while the drawing is open
+- **WHEN** the open drawing changes on disk while the tab is visible (checked every 4 seconds, on window focus, and when the tab becomes visible)
+- **THEN** the system reloads it from disk, keeping the viewport, or asks the user if the canvas has unsaved edits.
+
+#### Scenario: Conflict dialog
+- **WHEN** both the canvas and the file on disk changed
+- **THEN** the system pauses auto-save and offers "Use disk version", "Keep this version", and "Keep both" (the default, which saves the canvas as `Name (conflict YYYY-MM-DD HH-mm)` and loads the disk version).
+
+#### Scenario: Drawing moved or deleted elsewhere
+- **WHEN** the open drawing no longer exists on disk
+- **THEN** the system unlinks it without recreating the file, and saves the canvas as a new drawing only once it is edited.
+
+#### Scenario: Sync app conflict copies
+- **WHEN** the vault contains Syncthing copies named `Name.sync-conflict-YYYYMMDD-HHMMSS-DEVICE.ext`
+- **THEN** the drawer lists each copy below its drawing with a "Conflict" badge and offers "Use this version" (replaces the drawing after confirmation and removes the copy) and "Discard copy".
