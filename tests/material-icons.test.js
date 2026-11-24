@@ -10,7 +10,7 @@ test('Iconify is packaged locally and the picker supports all collections', () =
   const injectSource = fs.readFileSync(path.join(root, 'inject.js'), 'utf8');
 
   assert.ok(mainWorldScript);
-  assert.equal(manifest.version, '5.6.0');
+  assert.equal(manifest.version, '5.8.0');
   assert.equal(mainWorldScript.js[0], 'vendor/iconify-icon.min.js');
   assert.ok(fs.existsSync(path.join(root, 'vendor', 'iconify-icon.min.js')));
   assert.match(injectSource, /https:\/\/api\.iconify\.design\/collections/);
@@ -23,8 +23,11 @@ test('Iconify is packaged locally and the picker supports all collections', () =
   assert.match(injectSource, /queueAnimatedSvgImport\(svgContent\)/);
   assert.match(injectSource, /id = 'ExcaliGifSvgOverlay'/);
   assert.match(injectSource, /attachShadow\(\{ mode: 'closed' \}\)/);
-  assert.match(injectSource, /animation\.setAttribute\('repeatCount', 'indefinite'\)/);
-  assert.match(injectSource, /animation-iteration-count: infinite !important/);
+  // Animated SVGs keep their own timing; one-shot icons replay as a whole.
+  assert.doesNotMatch(injectSource, /setAttribute\('repeatCount', 'indefinite'\)/);
+  assert.doesNotMatch(injectSource, /animation-iteration-count: infinite !important/);
+  assert.match(injectSource, /Core\.svgAnimationLoopsNatively\(markup\)/);
+  assert.match(injectSource, /watchForReplay\(elementId, shadowRoot\)/);
   assert.match(injectSource, /excaliup_icon_favorites/);
   assert.match(injectSource, /data-view="favorites"/);
   assert.match(injectSource, /class="excaligif-icon-favorite/);

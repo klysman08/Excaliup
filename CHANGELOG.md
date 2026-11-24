@@ -2,6 +2,21 @@
 
 All notable changes to Excali Up are documented here.
 
+## 5.8.0 — 2026-11-24
+
+### Local Vault
+- Added a Trash: deleting a drawing or folder moves its drawings to a hidden `.excaliup/trash` folder in the vault, where they can be restored or deleted forever. Other files in a deleted folder are left alone.
+- Added an Archive (`.excaliup/archive`) for drawings you are done with. Archive from the row menu or with A; unarchive any time.
+- Before a drawing is replaced ("Keep this version" in a conflict, or "Use this version" on a sync conflict copy), the version on disk is copied to the Trash as `Name (replaced YYYY-MM-DD HH-MM)`.
+- Added sorting (last modified, oldest first, name A–Z / Z–A, largest first) and a last-edit filter (today, 7 days, 30 days, older). Both are remembered per browser.
+- The vault drawer closes when you click outside it, open a drawing, or create a new one.
+- Scanning the vault no longer shows an empty list when part of the folder cannot be read: unreadable folders are skipped and reported, a listing cut short (for example while a sync app renames files) is retried, and an empty vault explains why (wrong folder, only Obsidian `.excalidraw.md` notes, or read errors). Extensions are matched case-insensitively.
+- Saved drawings only embed the images they use. Before, images cached from drawings opened earlier in the tab were saved too, which bloated files.
+
+### Animated SVGs
+- Animated icons keep their own timing. Sequenced icons such as `line-md:loading-twotone-loop` no longer redraw their intro forever, and chained steps (`begin="a.end"`) now run.
+- Icons that animate only once play their whole sequence, hold the final frame for 1.5 s, then replay.
+
 ## 5.6.0 — 2026-10-27
 
 ### Local Vault

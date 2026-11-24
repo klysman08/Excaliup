@@ -16,6 +16,9 @@
   const activeAnimatedSvgs = new Map(); // fileId -> AnimatedSvgPlayer instance
   const pendingAnimatedSvgImports = [];
   const currentSettings = { ...Core.DEFAULT_SETTINGS };
+  // One-shot animated SVGs hold their last frame this long before replaying.
+  const SVG_REPLAY_HOLD_MS = 1500;
+  const SVG_REPLAY_MAX_MS = 20000;
 
   // Iconify sidebar state
   let sidebarElement = null;
@@ -91,9 +94,12 @@
   let vaultStatusButton = null;
   let isVaultDrawerOpen = false;
   let vaultSearchQuery = '';
-  let vaultCurrentView = 'all'; // 'all' | 'favorites' | 'recent'
+  let vaultCurrentView = 'all'; // 'all' | 'favorites' | 'recent' | 'archive' | 'trash'
   let vaultDirectoryData = { currentPath: '', folders: [], files: [] };
   let vaultAllDrawings = [];
+  let vaultShelved = { archive: [], trash: [] };
+  let vaultScanReport = null; // what the last scan saw; explains an empty vault
+  let vaultScanError = null; // set when the vault folder could not be listed at all
 
   let overlayAnimationFrameId = null;
   let svgOverlayTimer = null;
@@ -565,13 +571,11 @@
       }
     }
 
+    // The icon's own timing is kept as is. Forcing every animation to repeat
+    // broke sequenced icons: intro strokes redrew forever, and steps chained
+    // with `begin="other.end"` never started because nothing ever ended.
+    // One-shot icons are replayed as a whole instead (see watchForReplay).
     const svg = documentNode.documentElement;
-    for (const animation of svg.querySelectorAll('animate, animateTransform, animateMotion')) {
-      animation.setAttribute('repeatCount', 'indefinite');
-    }
-    const loopStyle = documentNode.createElementNS('http://www.w3.org/2000/svg', 'style');
-    loopStyle.textContent = '* { animation-iteration-count: infinite !important; }';
-    svg.appendChild(loopStyle);
     svg.setAttribute('width', '100%');
     svg.setAttribute('height', '100%');
     svg.setAttribute('preserveAspectRatio', svg.getAttribute('preserveAspectRatio') || 'xMidYMid meet');
@@ -689,6 +693,8 @@
       this.overlayElements = new Map();
       this.svgElements = new Map();
       this.lastTransforms = new Map();
+      this.replayTimers = new Map();
+      this.loopsNatively = true;
       this.lastSrc = '';
       this.isLoaded = false;
       this.isPlaying = false;
@@ -746,6 +752,7 @@
         });
 
         this.safeMarkup = safeMarkup;
+        this.loopsNatively = Core.svgAnimationLoopsNatively(markup);
         this.transparentCanvas = transparentCanvas;
         this.isLoaded = true;
         if (currentSettings.animatedSvgsEnabled) this.start();
@@ -778,6 +785,7 @@
           this.overlayElements.delete(elementId);
           this.svgElements.delete(elementId);
           this.lastTransforms.delete(elementId);
+          this.clearReplay(elementId);
         }
       }
 
@@ -797,6 +805,76 @@
         overlay.appendChild(overlayElement);
         this.overlayElements.set(element.id, overlayElement);
         this.svgElements.set(element.id, shadowRoot.querySelector('svg'));
+        if (!this.loopsNatively) this.watchForReplay(element.id, shadowRoot);
+      }
+    }
+
+    clearReplay(elementId) {
+      const watch = this.replayTimers.get(elementId);
+      if (!watch) return;
+      clearTimeout(watch.timer);
+      clearTimeout(watch.cssTimer);
+      watch.cancelled = true;
+      watch.listeners.abort();
+      this.replayTimers.delete(elementId);
+    }
+
+    // A one-shot icon plays its whole sequence, holds the final frame, then
+    // starts over from a fresh copy so every step runs again in order.
+    watchForReplay(elementId, shadowRoot) {
+      this.clearReplay(elementId);
+      const svg = shadowRoot.querySelector('svg');
+      if (!svg) return;
+      const watch = { timer: null, cssTimer: null, cancelled: false, listeners: new AbortController() };
+      const { signal } = watch.listeners;
+      this.replayTimers.set(elementId, watch);
+
+      const replay = () => {
+        if (watch.cancelled || this.isDestroyed || !this.overlayElements.has(elementId)) return;
+        if (!this.isPlaying || document.hidden) {
+          schedule(SVG_REPLAY_HOLD_MS);
+          return;
+        }
+        shadowRoot.innerHTML = this.safeMarkup;
+        this.svgElements.set(elementId, shadowRoot.querySelector('svg'));
+        this.watchForReplay(elementId, shadowRoot);
+      };
+      const schedule = (delay) => {
+        clearTimeout(watch.timer);
+        watch.timer = setTimeout(replay, delay);
+      };
+
+      const pendingSmil = new Set(svg.querySelectorAll('animate, animateTransform, animateMotion, set'));
+      let runningCss = 0;
+      let sawCss = false;
+      const checkFinished = () => {
+        if (!watch.cancelled && pendingSmil.size === 0 && runningCss === 0) schedule(SVG_REPLAY_HOLD_MS);
+      };
+      for (const animation of pendingSmil) {
+        animation.addEventListener('endEvent', () => {
+          pendingSmil.delete(animation);
+          checkFinished();
+        }, { signal });
+      }
+      shadowRoot.addEventListener('animationstart', () => {
+        sawCss = true;
+        runningCss++;
+      }, { signal });
+      const onCssEnd = () => {
+        runningCss = Math.max(0, runningCss - 1);
+        checkFinished();
+      };
+      shadowRoot.addEventListener('animationend', onCssEnd, { signal });
+      shadowRoot.addEventListener('animationcancel', onCssEnd, { signal });
+
+      // Backstop for animations that wait for a click or never report an end.
+      schedule(SVG_REPLAY_MAX_MS);
+      if (!pendingSmil.size) {
+        // CSS-only icons: give the overlay a moment to become visible first,
+        // since hidden elements do not run CSS animations.
+        watch.cssTimer = setTimeout(() => {
+          if (!sawCss) checkFinished();
+        }, SVG_REPLAY_MAX_MS / 4);
       }
     }
 
@@ -828,6 +906,7 @@
       if (this.abortController) this.abortController.abort();
       this.abortController = null;
       for (const overlayElement of this.overlayElements.values()) overlayElement.remove();
+      for (const elementId of [...this.replayTimers.keys()]) this.clearReplay(elementId);
       if (this.transparentCanvas) {
         this.transparentCanvas.width = 0;
         this.transparentCanvas.height = 0;
@@ -3537,6 +3616,64 @@
         background: var(--xv-primary-soft);
         color: var(--xv-primary);
       }
+      .excaliup-vault-tabs [role="tab"].is-icon-tab {
+        flex: 0 0 auto;
+        min-width: 34px;
+        padding: 0 7px;
+        gap: 4px;
+      }
+      .excaliup-vault-tabs [role="tab"].is-icon-tab iconify-icon { font-size: 15px; }
+      .excaliup-vault-tabs .excaliup-vault-count[hidden] { display: none; }
+
+      /* Sort & filter */
+      .excaliup-vault-sortbar {
+        display: flex;
+        gap: 6px;
+      }
+      .excaliup-vault-select {
+        position: relative;
+        flex: 1;
+        min-width: 0;
+        height: 30px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 8px;
+        border-radius: var(--xv-radius);
+        border: 1px solid var(--xv-border);
+        background: var(--xv-bg);
+        color: var(--xv-muted);
+        cursor: pointer;
+      }
+      .excaliup-vault-select:hover { border-color: var(--xv-faint); }
+      .excaliup-vault-select:focus-within {
+        border-color: var(--xv-primary);
+        box-shadow: 0 0 0 3px var(--xv-primary-soft);
+      }
+      .excaliup-vault-select iconify-icon { font-size: 14px; flex-shrink: 0; }
+      .excaliup-vault-drawer .excaliup-vault-select select {
+        flex: 1;
+        min-width: 0;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        border: none;
+        outline: none;
+        box-shadow: none;
+        background: transparent;
+        color: var(--xv-text);
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .excaliup-vault-drawer .excaliup-vault-select select:disabled { color: var(--xv-faint); cursor: default; }
+      .excaliup-vault-select select option { background: var(--xv-bg); color: var(--xv-text); }
+      .excaliup-vault-sortbar.is-filtered .excaliup-vault-select.is-filter {
+        border-color: var(--xv-primary);
+        background: var(--xv-primary-soft);
+        color: var(--xv-primary);
+      }
 
       /* Breadcrumbs */
       .excaliup-vault-crumbs {
@@ -3709,6 +3846,60 @@
         flex-shrink: 0;
       }
       .excaliup-vault-chip.is-conflict { background: var(--xv-warn); color: #fff; }
+
+      .excaliup-vault-notice {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        margin: 6px 4px 2px;
+        padding: 8px 10px;
+        border-radius: var(--xv-radius);
+        background: color-mix(in srgb, var(--xv-warn) 14%, transparent);
+        color: var(--xv-text);
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      .excaliup-vault-notice iconify-icon { color: var(--xv-warn); font-size: 15px; flex-shrink: 0; margin-top: 1px; }
+      .excaliup-vault-notice span { flex: 1; min-width: 0; }
+
+      /* Trash & archive */
+      .excaliup-vault-section-label.has-action {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding-top: 4px;
+        padding-bottom: 0;
+      }
+      .excaliup-vault-section-label .excaliup-vault-link-btn {
+        text-transform: none;
+        letter-spacing: 0;
+      }
+      .excaliup-vault-link-btn.is-danger { color: var(--xv-danger) !important; }
+      .excaliup-vault-link-btn.is-danger:hover {
+        background: color-mix(in srgb, var(--xv-danger) 12%, transparent);
+      }
+      .excaliup-vault-row.is-shelved .excaliup-vault-row-icon {
+        background: var(--xv-surface);
+        color: var(--xv-muted);
+      }
+      .excaliup-vault-row-restore {
+        height: 28px;
+        padding: 0 8px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid var(--xv-border);
+        border-radius: var(--xv-radius);
+        background: var(--xv-bg);
+        color: var(--xv-text) !important;
+        font-size: 15px;
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+      .excaliup-vault-row-restore:hover {
+        border-color: var(--xv-primary);
+        color: var(--xv-primary) !important;
+      }
 
       /* Empty & onboarding states */
       .excaliup-vault-empty {
@@ -5314,7 +5505,7 @@
       openVaultModal({
         icon: 'lucide:git-compare-arrows',
         title: 'Drawing changed in two places',
-        description: `“${name}” was changed on disk (for example on another device) and also here. Keeping both saves this version as a separate drawing.`,
+        description: `“${name}” was changed on disk (for example on another device) and also here. Keeping both saves this version as a separate drawing. If you keep only this version, the disk version goes to Trash.`,
         confirmText: 'Keep both',
         actions: [
           { id: 'disk', label: 'Use disk version' },
@@ -5348,13 +5539,18 @@
     const scene = getCurrentScene();
     const hash = getSceneHash(scene.elements, scene.appState);
     if (choice === 'local') {
+      // The disk version may hold another device's work: keep it in Trash.
+      const backupPath = await Core.backupDrawingToTrash(rootVaultHandle, path);
       await writeVaultScene(path, scene, hash);
       activeDrawingRelativePath = path;
       lastSavedSceneHash = hash;
       vaultLastSavedAt = Date.now();
       setLastOpenedDrawing(path);
       setVaultSyncState('synced');
-      showToast(`Kept this version of “${name}”`);
+      showToast(backupPath
+        ? `Kept this version of “${name}”. The disk version is in Trash.`
+        : `Kept this version of “${name}”`);
+      if (backupPath) refreshVaultListing(isVaultDrawerOpen);
       return;
     }
 
@@ -5501,12 +5697,18 @@
         } else {
           // A different folder: what this device saw in the old one is moot,
           // and the folder's own `lastOpenedFile` belongs to whoever wrote it.
-          vaultDeviceState = Core.normalizeVaultDeviceState({ legacyImported: true });
+          vaultDeviceState = Core.normalizeVaultDeviceState({
+            legacyImported: true,
+            sort: vaultDeviceState.sort,
+            dateFilter: vaultDeviceState.dateFilter
+          });
           vaultMetadata.lastOpenedFile = null;
           persistVaultDeviceState();
         }
         currentVaultRelativePath = '';
         vaultSearchQuery = '';
+        vaultScanReport = null;
+        vaultScanError = null;
         activeDrawingRelativePath = null;
         lastSavedSceneHash = '';
         vaultLastSavedAt = 0;
@@ -5557,6 +5759,7 @@
         return;
       }
       renderVaultItems();
+      closeVaultDrawer();
       showToast(`Opened “${getDrawingDisplayName(relativePath)}”`);
     } catch (err) {
       console.error('[Excali Up] Failed to open drawing:', err);
@@ -5636,6 +5839,7 @@
             setVaultSyncState('synced');
           }, { flush: true });
           await refreshVaultListing(true);
+          closeVaultDrawer();
           showToast(`Created “${displayName}”`);
         } catch (err) {
           console.error('[Excali Up] Failed to create drawing:', err);
@@ -5814,36 +6018,119 @@
     });
   }
 
-  function deleteVaultDrawing(relativePath) {
+  // Forgets a drawing that left the vault listing (trash, archive, delete).
+  // An open drawing stays on the canvas, unsaved until it is edited again.
+  function forgetVaultDrawing(relativePath) {
+    vaultMetadata.favorites = (vaultMetadata.favorites || []).filter((path) => path !== relativePath);
+    moveVaultDeviceReferences(relativePath, null);
+    if (activeDrawingRelativePath === relativePath) {
+      activeDrawingRelativePath = null;
+      lastSavedSceneHash = getCurrentSceneHash();
+    }
+  }
+
+  const VAULT_SHELF_LABELS = {
+    trash: { name: 'Trash', moved: 'Moved to Trash', icon: 'lucide:trash-2' },
+    archive: { name: 'Archive', moved: 'Archived', icon: 'lucide:archive' }
+  };
+
+  // Trash and archive are both recoverable, so they need no confirmation.
+  async function shelveVaultDrawing(relativePath, shelf) {
     if (!rootVaultHandle || !relativePath) return;
     const name = getDrawingDisplayName(relativePath);
-    const isActive = activeDrawingRelativePath === relativePath;
+    const labels = VAULT_SHELF_LABELS[shelf];
+    try {
+      await withVaultLock(async () => {
+        await Core.shelveDrawing(rootVaultHandle, relativePath, shelf);
+        forgetVaultDrawing(relativePath);
+        await saveVaultMetadata();
+      }, { flush: activeDrawingRelativePath === relativePath });
+      await refreshVaultListing(true);
+      showToast(`${labels.moved}: “${name}”. Restore it from ${labels.name}.`);
+    } catch (err) {
+      console.error(`[Excali Up] Moving to ${labels.name} failed:`, err);
+      showToast(`Could not move “${name}” to ${labels.name}`);
+      refreshVaultListing(true);
+    }
+  }
 
+  function deleteVaultDrawing(relativePath) {
+    return shelveVaultDrawing(relativePath, 'trash');
+  }
+
+  async function restoreVaultShelved(shelfPath, shelf) {
+    if (!rootVaultHandle || !shelfPath) return;
+    try {
+      const restoredPath = await withVaultLock(() => Core.restoreShelvedDrawing(rootVaultHandle, shelfPath, shelf));
+      await refreshVaultListing(true);
+      const folder = getParentFolder(restoredPath) || 'Vault root';
+      showToast(`Restored “${getDrawingDisplayName(restoredPath)}” to ${folder}`);
+    } catch (err) {
+      console.error('[Excali Up] Restore failed:', err);
+      showToast('Could not restore the drawing');
+      refreshVaultListing(true);
+    }
+  }
+
+  async function moveShelvedToTrash(shelfPath) {
+    if (!rootVaultHandle || !shelfPath) return;
+    const originalPath = Core.getShelvedOriginalPath('archive', shelfPath);
+    try {
+      await withVaultLock(async () => {
+        // Back to its vault path first, so the trash remembers the same origin.
+        const restored = await Core.restoreShelvedDrawing(rootVaultHandle, shelfPath, 'archive');
+        await Core.shelveDrawing(rootVaultHandle, restored, 'trash');
+      });
+      await refreshVaultListing(true);
+      showToast(`Moved to Trash: “${getDrawingDisplayName(originalPath)}”`);
+    } catch (err) {
+      console.error('[Excali Up] Moving to Trash failed:', err);
+      showToast('Could not move the drawing to Trash');
+      refreshVaultListing(true);
+    }
+  }
+
+  function deleteShelvedForever(shelfPath) {
+    if (!rootVaultHandle || !shelfPath) return;
+    const name = getDrawingDisplayName(shelfPath);
     openVaultModal({
       icon: 'lucide:trash-2',
       tone: 'danger',
-      title: 'Delete drawing?',
-      description: isActive
-        ? `“${name}” is open right now. The file is removed from disk, and the canvas stays unsaved until you edit it again.`
-        : `“${name}” will be permanently removed from your disk.`,
-      confirmText: 'Delete',
+      title: 'Delete forever?',
+      description: `“${name}” will be permanently removed from your disk. This cannot be undone.`,
+      confirmText: 'Delete forever',
       onConfirm: async () => {
         try {
-          await withVaultLock(async () => {
-            await Core.deleteDrawingFile(rootVaultHandle, relativePath);
-            vaultMetadata.favorites = (vaultMetadata.favorites || []).filter((path) => path !== relativePath);
-            moveVaultDeviceReferences(relativePath, null);
-            if (activeDrawingRelativePath === relativePath) {
-              activeDrawingRelativePath = null;
-              lastSavedSceneHash = getCurrentSceneHash();
-            }
-            await saveVaultMetadata();
-          });
+          await withVaultLock(() => Core.deleteDrawingFile(rootVaultHandle, shelfPath));
           await refreshVaultListing(true);
-          showToast(`Deleted “${name}”`);
+          showToast(`Deleted “${name}” forever`);
         } catch (err) {
           console.error('[Excali Up] Delete failed:', err);
           showToast('Could not delete the drawing');
+          refreshVaultListing(true);
+        }
+      }
+    });
+  }
+
+  function emptyVaultTrash() {
+    const count = vaultShelved.trash.length;
+    if (!rootVaultHandle || !count) return;
+    openVaultModal({
+      icon: 'lucide:trash-2',
+      tone: 'danger',
+      title: 'Empty Trash?',
+      description: `${count} drawing${count === 1 ? '' : 's'} will be permanently removed from your disk. This cannot be undone.`,
+      confirmText: 'Empty Trash',
+      onConfirm: async () => {
+        try {
+          await withVaultLock(() => Core.emptyVaultShelf(rootVaultHandle, 'trash'));
+          await refreshVaultListing(true);
+          showToast('Trash emptied');
+        } catch (err) {
+          console.error('[Excali Up] Emptying the trash failed:', err);
+          showToast('Could not empty the Trash');
+          refreshVaultListing(true);
         }
       }
     });
@@ -5866,7 +6153,7 @@
       icon: 'lucide:check-check',
       tone: 'danger',
       title: 'Use this version?',
-      description: `The conflict copy from ${date} replaces “${name}”, and the copy is removed. The current “${name}” is overwritten.`,
+      description: `The conflict copy from ${date} replaces “${name}”, and the copy is removed. The current “${name}” is kept in Trash.`,
       confirmText: 'Use this version',
       onConfirm: async () => {
         const reopen = activeDrawingRelativePath === originalPath || activeDrawingRelativePath === conflictPath;
@@ -5874,6 +6161,7 @@
           await withVaultLock(async () => {
             const content = await Core.readDrawingFile(rootVaultHandle, conflictPath);
             if (!Core.parseExcalidrawScene(content)) throw new Error('The conflict copy is not a drawing');
+            await Core.backupDrawingToTrash(rootVaultHandle, originalPath);
             await Core.writeDrawingFile(rootVaultHandle, originalPath, content);
             await Core.deleteDrawingFile(rootVaultHandle, conflictPath);
             moveVaultDeviceReferences(conflictPath, null);
@@ -5899,29 +6187,31 @@
 
     openVaultModal({
       icon: 'lucide:folder-x',
-      tone: 'danger',
       title: 'Delete folder?',
       description: drawingCount
-        ? `“${folderName}” and the ${drawingCount} drawing${drawingCount === 1 ? '' : 's'} inside it will be permanently removed from your disk.`
+        ? `The ${drawingCount} drawing${drawingCount === 1 ? '' : 's'} in “${folderName}” move to Trash, where you can restore them. Other files in the folder are left alone.`
         : `The empty folder “${folderName}” will be removed from your disk.`,
-      confirmText: 'Delete folder',
+      confirmText: drawingCount ? 'Move to Trash' : 'Delete folder',
       onConfirm: async () => {
         try {
-          await withVaultLock(async () => {
-            await Core.deleteVaultFolder(rootVaultHandle, folderPath, true);
+          const result = await withVaultLock(async () => {
+            const outcome = await Core.trashVaultFolder(rootVaultHandle, folderPath);
             vaultMetadata.favorites = (vaultMetadata.favorites || []).filter((path) => !isVaultPathInside(path, folderPath));
             moveVaultDeviceReferences(folderPath, null);
             if (activeDrawingRelativePath && isVaultPathInside(activeDrawingRelativePath, folderPath)) {
               activeDrawingRelativePath = null;
               lastSavedSceneHash = getCurrentSceneHash();
             }
-            if (isVaultPathInside(currentVaultRelativePath, folderPath)) {
+            if (outcome.folderRemoved && isVaultPathInside(currentVaultRelativePath, folderPath)) {
               currentVaultRelativePath = getParentFolder(folderPath);
             }
             await saveVaultMetadata();
-          });
+            return outcome;
+          }, { flush: !!activeDrawingRelativePath && isVaultPathInside(activeDrawingRelativePath, folderPath) });
           await refreshVaultListing(true);
-          showToast(`Deleted folder “${folderName}”`);
+          showToast(result.folderRemoved
+            ? `Deleted folder “${folderName}”${result.moved.length ? '. Its drawings are in Trash.' : ''}`
+            : `Moved the drawings of “${folderName}” to Trash. The folder still holds other files.`);
         } catch (err) {
           console.error('[Excali Up] Delete folder failed:', err);
           showToast('Could not delete the folder');
@@ -5941,6 +6231,7 @@
     const requestId = ++vaultListingRequestId;
     vaultIsScanning = true;
     if (render) renderVaultStatusCard();
+    const report = Core.createVaultScanReport();
     try {
       let directory;
       try {
@@ -5951,10 +6242,20 @@
         currentVaultRelativePath = '';
         directory = await Core.scanVaultDirectory(rootVaultHandle, '');
       }
-      const allDrawings = await Core.scanAllVaultDrawings(rootVaultHandle, '');
+      const allDrawings = await Core.scanAllVaultDrawings(rootVaultHandle, '', report);
+      if (report.errors.length) {
+        console.warn('[Excali Up] Some vault entries could not be read:', report.errors);
+      }
+      const [archive, trash] = await Promise.all([
+        Core.listShelvedDrawings(rootVaultHandle, 'archive'),
+        Core.listShelvedDrawings(rootVaultHandle, 'trash')
+      ]);
       if (requestId !== vaultListingRequestId) return;
       vaultDirectoryData = directory;
       vaultAllDrawings = allDrawings;
+      vaultShelved = { archive, trash };
+      vaultScanReport = report;
+      vaultScanError = null;
       const conflictCount = allDrawings.filter((file) => file.conflictOf).length;
       if (conflictCount > vaultConflictCount) {
         showToast(conflictCount === 1
@@ -5966,7 +6267,14 @@
       if (requestId !== vaultListingRequestId) return;
       console.error('[Excali Up] Failed to scan vault:', err);
       const hasPerm = await Core.verifyHandlePermission(rootVaultHandle, true);
-      if (!hasPerm) setVaultSyncState('permission-required');
+      if (!hasPerm) {
+        setVaultSyncState('permission-required');
+      } else {
+        // Say so instead of showing an empty vault.
+        vaultScanError = { name: (err && err.name) || 'Error', message: (err && err.message) || String(err) };
+        vaultDirectoryData = { currentPath: currentVaultRelativePath, folders: [], files: [] };
+        vaultAllDrawings = [];
+      }
     } finally {
       if (requestId === vaultListingRequestId) vaultIsScanning = false;
     }
@@ -5994,43 +6302,84 @@
     if (isVaultDrawerOpen) renderVaultItems();
   }
 
+  const VAULT_SORT_OPTIONS = [
+    { value: 'modified-desc', label: 'Last modified' },
+    { value: 'modified-asc', label: 'Oldest first' },
+    { value: 'name-asc', label: 'Name A–Z' },
+    { value: 'name-desc', label: 'Name Z–A' },
+    { value: 'size-desc', label: 'Largest first' }
+  ];
+  const VAULT_DATE_FILTER_OPTIONS = [
+    { value: 'any', label: 'Any time' },
+    { value: 'today', label: 'Today' },
+    { value: '7d', label: 'Last 7 days' },
+    { value: '30d', label: 'Last 30 days' },
+    { value: 'older', label: 'Older than 30 days' }
+  ];
+
+  function getVaultDateFilterLabel() {
+    const option = VAULT_DATE_FILTER_OPTIONS.find((entry) => entry.value === vaultDeviceState.dateFilter);
+    return option && option.value !== 'any' ? `Edited: ${option.label.toLowerCase()}` : 'Drawings';
+  }
+
+  function isVaultFilterActive() {
+    return vaultDeviceState.dateFilter !== 'any';
+  }
+
+  function isVaultShelfView(view = vaultCurrentView) {
+    return view === 'archive' || view === 'trash';
+  }
+
   function getVisibleVaultEntries() {
     const query = vaultSearchQuery.trim().toLowerCase();
     const favorites = new Set(vaultMetadata.favorites || []);
-    const matches = (file) => !query || getDrawingDisplayName(file.path).toLowerCase().includes(query);
+    const { sort, dateFilter } = vaultDeviceState;
+    const matches = (file) => !query ||
+      getDrawingDisplayName(file.originalPath || file.path).toLowerCase().includes(query);
+    const arrange = (files, order = sort) => Core.sortVaultFiles(
+      Core.filterVaultFilesByDate(files.filter(matches), dateFilter),
+      order
+    );
 
+    if (isVaultShelfView()) {
+      return {
+        folders: [],
+        files: arrange(vaultShelved[vaultCurrentView]),
+        showPath: true,
+        filesLabel: vaultCurrentView === 'trash' ? 'In Trash' : 'Archived'
+      };
+    }
     if (vaultCurrentView === 'favorites') {
       return {
         folders: [],
-        files: vaultAllDrawings
-          .filter((file) => favorites.has(file.path) && matches(file))
-          .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })),
+        files: arrange(vaultAllDrawings.filter((file) => favorites.has(file.path))),
         showPath: true,
         filesLabel: 'Starred'
       };
     }
     if (vaultCurrentView === 'recent') {
+      // Recent is always newest first; the date filter still narrows it.
       return {
         folders: [],
-        files: [...vaultAllDrawings]
-          .sort((a, b) => (b.lastModified || 0) - (a.lastModified || 0))
-          .filter(matches)
-          .slice(0, VAULT_RECENT_LIMIT),
+        files: arrange(vaultAllDrawings, 'modified-desc').slice(0, VAULT_RECENT_LIMIT),
         showPath: true,
         filesLabel: 'Recently edited'
       };
     }
-    if (query) {
+    if (query || dateFilter !== 'any') {
+      // Searching or filtering by date looks through the whole vault.
       return {
-        folders: (vaultDirectoryData.folders || []).filter((folder) => folder.name.toLowerCase().includes(query)),
-        files: vaultAllDrawings.filter(matches),
+        folders: query
+          ? (vaultDirectoryData.folders || []).filter((folder) => folder.name.toLowerCase().includes(query))
+          : [],
+        files: arrange(vaultAllDrawings),
         showPath: true,
-        filesLabel: 'Matching drawings'
+        filesLabel: query ? 'Matching drawings' : getVaultDateFilterLabel()
       };
     }
     return {
       folders: vaultDirectoryData.folders || [],
-      files: vaultDirectoryData.files || [],
+      files: arrange(vaultDirectoryData.files || []),
       showPath: false,
       filesLabel: 'Drawings'
     };
@@ -6088,12 +6437,46 @@
     if (starCount) {
       starCount.textContent = String((vaultMetadata.favorites || []).filter((path) => existing.has(path)).length);
     }
+    for (const shelf of ['archive', 'trash']) {
+      const count = vaultShelved[shelf].length;
+      const badge = document.getElementById(`excaliup-vault-count-${shelf}`);
+      if (badge) {
+        badge.textContent = String(count);
+        badge.hidden = count === 0;
+      }
+      const tab = vaultDrawerElement.querySelector(`[data-vault-tab="${shelf}"]`);
+      if (tab) {
+        const label = `${VAULT_SHELF_LABELS[shelf].name}${count ? ` (${count})` : ''}`;
+        tab.title = label;
+        tab.setAttribute('aria-label', label);
+      }
+    }
+    renderVaultSortBar();
+  }
+
+  function renderVaultSortBar() {
+    if (!vaultDrawerElement) return;
+    const sortSelect = vaultDrawerElement.querySelector('#excaliup-vault-sort');
+    const dateSelect = vaultDrawerElement.querySelector('#excaliup-vault-date-filter');
+    if (sortSelect && sortSelect.value !== vaultDeviceState.sort) sortSelect.value = vaultDeviceState.sort;
+    if (dateSelect && dateSelect.value !== vaultDeviceState.dateFilter) dateSelect.value = vaultDeviceState.dateFilter;
+    if (sortSelect) sortSelect.disabled = vaultCurrentView === 'recent';
+    const bar = vaultDrawerElement.querySelector('.excaliup-vault-sortbar');
+    if (bar) bar.classList.toggle('is-filtered', isVaultFilterActive());
+  }
+
+  function setVaultListPreference(key, value) {
+    if (vaultDeviceState[key] === value) return;
+    vaultDeviceState = Core.normalizeVaultDeviceState({ ...vaultDeviceState, [key]: value });
+    persistVaultDeviceState();
+    renderVaultBreadcrumbs();
+    renderVaultItems();
   }
 
   function renderVaultBreadcrumbs() {
     const container = document.getElementById('excaliup-vault-breadcrumbs');
     if (!container) return;
-    const visible = isVaultConnected() && vaultCurrentView === 'all' && !vaultSearchQuery.trim();
+    const visible = isVaultConnected() && vaultCurrentView === 'all' && !vaultSearchQuery.trim() && !isVaultFilterActive();
     container.hidden = !visible;
     if (!visible) return;
 
@@ -6110,6 +6493,43 @@
       const separator = index > 0 ? '<iconify-icon class="excaliup-vault-crumb-sep" icon="lucide:chevron-right" aria-hidden="true"></iconify-icon>' : '';
       return `${separator}<button type="button" class="excaliup-vault-crumb${isLast ? ' is-current' : ''}" data-vault-crumb="${escapeHtml(crumb.path)}" data-drop-folder="${escapeHtml(crumb.path)}"${isLast ? ' aria-current="page"' : ''}>${icon}<span>${escapeHtml(crumb.label)}</span></button>`;
     }).join('');
+  }
+
+  // An empty vault root can mean the wrong folder, drawings in another
+  // format, or folders the browser could not read. Says which, from the scan.
+  function getEmptyVaultExplanation() {
+    const report = vaultScanReport;
+    if (!report || vaultAllDrawings.length) return null;
+    const folderName = rootVaultHandle ? rootVaultHandle.name : 'This folder';
+    if (report.errors.length) {
+      const first = report.errors[0];
+      return {
+        icon: 'lucide:triangle-alert',
+        title: 'Some folders could not be read',
+        text: `${report.errors.length === 1 ? 'One entry' : `${report.errors.length} entries`} in “${folderName}” could not be read (${first.path}: ${first.name} — ${first.message}). If a sync app is still copying files, try again in a moment.`,
+        action: 'refresh',
+        actionLabel: 'Rescan',
+        actionIcon: 'lucide:refresh-cw'
+      };
+    }
+    if (report.obsidianDrawings) {
+      return {
+        icon: 'lucide:file-warning',
+        title: 'Obsidian drawings found',
+        text: `“${folderName}” has ${report.obsidianDrawings} Obsidian Excalidraw note${report.obsidianDrawings === 1 ? '' : 's'} (.excalidraw.md). The vault opens .excalidraw files only.`
+      };
+    }
+    if (report.files || report.folders) {
+      return {
+        icon: 'lucide:folder-search',
+        title: 'No .excalidraw files here',
+        text: `“${folderName}” has ${report.files} file${report.files === 1 ? '' : 's'} in ${report.folders + 1} folder${report.folders ? 's' : ''}, but none end in .excalidraw. Check that you picked the folder that holds your drawings.`,
+        action: 'change-folder',
+        actionLabel: 'Choose another folder',
+        actionIcon: 'lucide:folder-open'
+      };
+    }
+    return null;
   }
 
   function renderVaultEmptyState(list, { icon, title, text, action, actionLabel, actionIcon }) {
@@ -6172,6 +6592,33 @@
     `;
   }
 
+  // Trash and archive rows open their menu: opening a shelved drawing would
+  // make auto-save write into the shelf.
+  function renderShelvedRow(file) {
+    const name = getDrawingDisplayName(file.originalPath || file.path);
+    const verb = file.shelf === 'trash' ? 'Deleted' : 'Archived';
+    const meta = [
+      getParentFolder(file.originalPath) || 'Vault root',
+      `${verb} ${formatFileDate(file.lastModified)}`,
+      formatBytes(file.size)
+    ].filter(Boolean).join(' · ');
+    return `
+      <div class="excaliup-vault-row is-file is-shelved" role="listitem" tabindex="-1" data-kind="shelved" data-shelf="${file.shelf}" data-path="${escapeHtml(file.path)}">
+        <span class="excaliup-vault-row-icon" aria-hidden="true"><iconify-icon icon="${VAULT_SHELF_LABELS[file.shelf].icon}"></iconify-icon></span>
+        <span class="excaliup-vault-row-text">
+          <span class="excaliup-vault-row-name">${escapeHtml(name)}</span>
+          <span class="excaliup-vault-row-meta">${escapeHtml(meta)}</span>
+        </span>
+        <button type="button" class="excaliup-vault-row-restore" data-vault-action="restore" aria-label="Restore ${escapeHtml(name)}" title="Restore">
+          <iconify-icon icon="lucide:undo-2" aria-hidden="true"></iconify-icon>
+        </button>
+        <button type="button" class="excaliup-vault-row-menu" data-vault-action="menu" aria-label="Actions for ${escapeHtml(name)}" title="Actions">
+          <iconify-icon icon="lucide:more-horizontal" aria-hidden="true"></iconify-icon>
+        </button>
+      </div>
+    `;
+  }
+
   // Lists each sync conflict copy right below the drawing it belongs to.
   function groupVaultConflictCopies(files) {
     const copies = files.filter((file) => file.conflictOf);
@@ -6223,9 +6670,11 @@
 
     renderVaultTabs();
     const { folders, files, showPath, filesLabel } = getVisibleVaultEntries();
+    const shelfView = isVaultShelfView();
     if (footer) {
-      const total = vaultAllDrawings.length;
-      footer.textContent = `${total} drawing${total === 1 ? '' : 's'} in vault`;
+      const total = shelfView ? vaultShelved[vaultCurrentView].length : vaultAllDrawings.length;
+      const where = vaultCurrentView === 'trash' ? 'in Trash' : vaultCurrentView === 'archive' ? 'archived' : 'in vault';
+      footer.textContent = `${total} drawing${total === 1 ? '' : 's'} ${where}`;
     }
 
     if (folders.length === 0 && files.length === 0) {
@@ -6233,23 +6682,63 @@
       const emptyByView = {
         favorites: { icon: 'material-symbols:star-outline-rounded', title: 'No starred drawings', text: 'Star a drawing to pin it here.' },
         recent: { icon: 'lucide:clock', title: 'Nothing here yet', text: 'Drawings you edit show up here.' },
+        archive: { icon: 'lucide:archive', title: 'Nothing archived', text: 'Archive drawings you are done with to keep the list short. They stay on disk and can be restored any time.' },
+        trash: { icon: 'lucide:trash-2', title: 'Trash is empty', text: 'Deleted drawings, and versions replaced while resolving a conflict, wait here until you restore them or empty the Trash.' },
         all: currentVaultRelativePath
           ? { icon: 'lucide:folder-open', title: 'This folder is empty', text: 'Create a drawing here, or drag one onto this folder.' }
           : { icon: 'lucide:file-plus-2', title: 'No drawings yet', text: 'Start drawing and it is saved here automatically.' }
       };
+      if (vaultScanError) {
+        renderVaultEmptyState(list, {
+          icon: 'lucide:folder-x',
+          title: 'Could not read this folder',
+          text: `${vaultScanError.name}: ${vaultScanError.message}`,
+          action: 'refresh',
+          actionLabel: 'Try again',
+          actionIcon: 'lucide:refresh-cw'
+        });
+        return;
+      }
+      const explained = !query && !isVaultFilterActive() && vaultCurrentView === 'all' && !currentVaultRelativePath
+        ? getEmptyVaultExplanation()
+        : null;
+      if (explained) {
+        renderVaultEmptyState(list, explained);
+        return;
+      }
+      const hasItemsBeforeFilters = shelfView
+        ? vaultShelved[vaultCurrentView].length > 0
+        : vaultCurrentView !== 'all' || vaultAllDrawings.length > 0;
       renderVaultEmptyState(list, query
         ? { icon: 'lucide:search-x', title: 'No matches', text: `Nothing matches “${query}”.` }
+        : isVaultFilterActive() && hasItemsBeforeFilters
+        ? { icon: 'lucide:calendar-x', title: 'Nothing in this period', text: 'No drawings match the date filter.', action: 'clear-filters', actionLabel: 'Show any time', actionIcon: 'lucide:filter-x' }
         : emptyByView[vaultCurrentView] || emptyByView.all);
       return;
     }
 
     const favorites = new Set(vaultMetadata.favorites || []);
     let html = '';
+    const unreadable = vaultScanReport ? vaultScanReport.errors.length : 0;
+    if (unreadable && !shelfView) {
+      const first = vaultScanReport.errors[0];
+      html += `<div class="excaliup-vault-notice" role="status" title="${escapeHtml(vaultScanReport.errors.map((error) => `${error.path}: ${error.name}`).join('\n'))}">
+        <iconify-icon icon="lucide:triangle-alert" aria-hidden="true"></iconify-icon>
+        <span>${unreadable === 1 ? 'One entry' : `${unreadable} entries`} could not be read, so some drawings may be missing (${escapeHtml(first.path)}: ${escapeHtml(first.name)}).</span>
+        <button type="button" class="excaliup-vault-link-btn" data-vault-action="refresh">Rescan</button>
+      </div>`;
+    }
     if (folders.length) {
       html += `<div class="excaliup-vault-section-label">Folders</div>`;
       html += folders.map(renderFolderRow).join('');
     }
-    if (files.length) {
+    if (files.length && shelfView) {
+      const emptyButton = vaultCurrentView === 'trash'
+        ? '<button type="button" class="excaliup-vault-link-btn is-danger" data-vault-action="empty-trash">Empty Trash</button>'
+        : '';
+      html += `<div class="excaliup-vault-section-label has-action"><span>${escapeHtml(filesLabel)}</span>${emptyButton}</div>`;
+      html += files.map(renderShelvedRow).join('');
+    } else if (files.length) {
       html += `<div class="excaliup-vault-section-label">${escapeHtml(filesLabel)}</div>`;
       html += groupVaultConflictCopies(files).map((file) => renderFileRow(file, showPath, favorites)).join('');
     }
@@ -6290,10 +6779,23 @@
   function showVaultActionPopover(anchorElement, kind, path) {
     closeActiveVaultPopover();
     const container = document.querySelector('.excalidraw') || document.body;
+    const shelf = kind === 'shelved' ? getShelfOfPath(path) : null;
     const items = kind === 'folder'
       ? [
         { action: 'open', icon: 'lucide:folder-open', label: 'Open folder' },
         { action: 'delete', icon: 'lucide:trash-2', label: 'Delete folder', danger: true }
+      ]
+      : shelf === 'trash'
+      ? [
+        { action: 'restore', icon: 'lucide:undo-2', label: 'Restore', hint: 'Enter' },
+        { separator: true },
+        { action: 'delete', icon: 'lucide:trash-2', label: 'Delete forever', hint: 'Del', danger: true }
+      ]
+      : shelf === 'archive'
+      ? [
+        { action: 'restore', icon: 'lucide:archive-restore', label: 'Unarchive', hint: 'Enter' },
+        { separator: true },
+        { action: 'delete', icon: 'lucide:trash-2', label: 'Move to Trash', hint: 'Del', danger: true }
       ]
       : getConflictOriginalPath(path)
       ? [
@@ -6307,8 +6809,9 @@
         { action: 'rename', icon: 'lucide:pencil', label: 'Rename', hint: 'F2' },
         { action: 'move', icon: 'lucide:folder-input', label: 'Move to…' },
         { action: 'duplicate', icon: 'lucide:copy', label: 'Duplicate' },
+        { action: 'archive', icon: 'lucide:archive', label: 'Archive', hint: 'A' },
         { separator: true },
-        { action: 'delete', icon: 'lucide:trash-2', label: 'Delete', hint: 'Del', danger: true }
+        { action: 'delete', icon: 'lucide:trash-2', label: 'Move to Trash', hint: 'Del', danger: true }
       ];
 
     const popover = document.createElement('div');
@@ -6508,7 +7011,24 @@
 
   // --- Drawer interactions ---
 
+  function getShelfOfPath(path) {
+    return String(path || '').startsWith(`${Core.VAULT_SHELVES.trash}/`) ? 'trash' : 'archive';
+  }
+
   function runVaultRowAction(action, kind, path) {
+    if (kind === 'shelved') {
+      const shelf = getShelfOfPath(path);
+      if (action === 'restore' || action === 'open') {
+        restoreVaultShelved(path, shelf);
+      } else if (action === 'delete') {
+        if (shelf === 'trash') {
+          deleteShelvedForever(path);
+        } else {
+          moveShelvedToTrash(path);
+        }
+      }
+      return;
+    }
     if (kind === 'folder') {
       if (action === 'open') {
         currentVaultRelativePath = path;
@@ -6528,6 +7048,7 @@
       case 'move': showVaultMoveModal(path); break;
       case 'duplicate': duplicateVaultDrawing(path); break;
       case 'delete': deleteVaultDrawing(path); break;
+      case 'archive': shelveVaultDrawing(path, 'archive'); break;
       case 'star': toggleVaultFavorite(path); break;
       case 'use-conflict': useVaultConflictCopy(path); break;
     }
@@ -6548,6 +7069,8 @@
       e.stopPropagation();
       if (row && action === 'menu') {
         showVaultActionPopover(actionButton, row.dataset.kind, row.dataset.path);
+      } else if (row && action === 'restore') {
+        runVaultRowAction('restore', row.dataset.kind, row.dataset.path);
       } else if (row && action === 'star') {
         toggleVaultFavorite(row.dataset.path);
       } else {
@@ -6570,6 +7093,11 @@
       return;
     }
 
+    if (row && row.dataset.kind === 'shelved') {
+      const menuButton = row.querySelector('[data-vault-action="menu"]');
+      if (menuButton) showVaultActionPopover(menuButton, 'shelved', row.dataset.path);
+      return;
+    }
     if (row) runVaultRowAction('open', row.dataset.kind, row.dataset.path);
   }
 
@@ -6583,6 +7111,8 @@
       case 'retry-save': saveVaultNow(true); break;
       case 'new-drawing': createNewVaultDrawing(); break;
       case 'new-folder': createNewVaultSubfolder(); break;
+      case 'empty-trash': emptyVaultTrash(); break;
+      case 'clear-filters': setVaultListPreference('dateFilter', 'any'); break;
       case 'clear-search': {
         const search = document.getElementById('excaliup-vault-search');
         if (search) {
@@ -6644,6 +7174,8 @@
         runVaultRowAction('open', kind, path);
       } else if ((e.key === 's' || e.key === 'S') && kind === 'file' && !e.ctrlKey && !e.metaKey) {
         toggleVaultFavorite(path);
+      } else if ((e.key === 'a' || e.key === 'A') && kind === 'file' && !getConflictOriginalPath(path) && !e.ctrlKey && !e.metaKey) {
+        shelveVaultDrawing(path, 'archive');
       } else {
         handled = false;
       }
@@ -6789,6 +7321,26 @@
           <button type="button" role="tab" data-vault-tab="all">All <span class="excaliup-vault-count" id="excaliup-vault-count-all">0</span></button>
           <button type="button" role="tab" data-vault-tab="favorites">Starred <span class="excaliup-vault-count" id="excaliup-vault-count-favorites">0</span></button>
           <button type="button" role="tab" data-vault-tab="recent">Recent</button>
+          <button type="button" role="tab" class="is-icon-tab" data-vault-tab="archive" title="Archive" aria-label="Archive">
+            <iconify-icon icon="lucide:archive" aria-hidden="true"></iconify-icon><span class="excaliup-vault-count" id="excaliup-vault-count-archive" hidden>0</span>
+          </button>
+          <button type="button" role="tab" class="is-icon-tab" data-vault-tab="trash" title="Trash" aria-label="Trash">
+            <iconify-icon icon="lucide:trash-2" aria-hidden="true"></iconify-icon><span class="excaliup-vault-count" id="excaliup-vault-count-trash" hidden>0</span>
+          </button>
+        </div>
+        <div class="excaliup-vault-sortbar">
+          <label class="excaliup-vault-select" title="Sort drawings">
+            <iconify-icon icon="lucide:arrow-down-wide-narrow" aria-hidden="true"></iconify-icon>
+            <select id="excaliup-vault-sort" aria-label="Sort drawings">
+              ${VAULT_SORT_OPTIONS.map((option) => `<option value="${option.value}">${escapeHtml(option.label)}</option>`).join('')}
+            </select>
+          </label>
+          <label class="excaliup-vault-select is-filter" title="Filter by last edit">
+            <iconify-icon icon="lucide:calendar-days" aria-hidden="true"></iconify-icon>
+            <select id="excaliup-vault-date-filter" aria-label="Filter by last edit">
+              ${VAULT_DATE_FILTER_OPTIONS.map((option) => `<option value="${option.value}">${escapeHtml(option.label)}</option>`).join('')}
+            </select>
+          </label>
         </div>
       </div>
 
@@ -6797,7 +7349,7 @@
 
       <footer class="excaliup-vault-footer">
         <span id="excaliup-vault-footer-info"></span>
-        <span class="excaliup-vault-hint"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>F2</kbd> rename · <kbd>S</kbd> star</span>
+        <span class="excaliup-vault-hint"><kbd>F2</kbd> rename · <kbd>S</kbd> star · <kbd>A</kbd> archive · <kbd>Del</kbd> trash</span>
       </footer>
     `;
     excalidraw.appendChild(vaultDrawerElement);
@@ -6813,11 +7365,18 @@
       renderVaultBreadcrumbs();
       renderVaultItems();
     });
+    vaultDrawerElement.querySelector('#excaliup-vault-sort').addEventListener('change', (e) => {
+      setVaultListPreference('sort', e.target.value);
+    });
+    vaultDrawerElement.querySelector('#excaliup-vault-date-filter').addEventListener('change', (e) => {
+      setVaultListPreference('dateFilter', e.target.value);
+    });
 
     renderVaultDrawer();
     attachVaultChangeListener();
     if (!vaultWatchTimer) vaultWatchTimer = setInterval(checkActiveDrawingOnDisk, VAULT_WATCH_INTERVAL);
     window.addEventListener('focus', checkActiveDrawingOnDisk);
+    document.addEventListener('pointerdown', onVaultOutsidePointerDown, true);
 
     Core.getStoredVaultHandle().then(async (handle) => {
       if (!handle) {
@@ -6853,6 +7412,7 @@
       vaultWatchTimer = null;
     }
     window.removeEventListener('focus', checkActiveDrawingOnDisk);
+    document.removeEventListener('pointerdown', onVaultOutsidePointerDown, true);
     closeActiveVaultPopover();
     closeActiveVaultModal();
     if (vaultStatusTimer) {
@@ -6905,9 +7465,25 @@
     }, 50);
   }
 
-  function closeVaultDrawer() {
+  // Clicking anywhere outside the drawer closes it, like a menu. Dialogs and
+  // row menus the drawer opened count as part of it.
+  function onVaultOutsidePointerDown(e) {
+    if (!isVaultDrawerOpen || !vaultDrawerElement || activeVaultModal) return;
+    const target = e.target;
+    if (!(target instanceof Element)) return;
+    if (
+      vaultDrawerElement.contains(target) ||
+      (vaultStatusButton && vaultStatusButton.contains(target)) ||
+      target.closest('.excaliup-vault-popover, .excaliup-vault-modal-overlay, #excaligif-toast')
+    ) {
+      return;
+    }
+    closeVaultDrawer({ restoreFocus: false });
+  }
+
+  function closeVaultDrawer({ restoreFocus = true } = {}) {
     if (!vaultDrawerElement) return;
-    const hadFocus = vaultDrawerElement.contains(document.activeElement);
+    const hadFocus = restoreFocus && vaultDrawerElement.contains(document.activeElement);
     vaultDrawerElement.classList.remove('open');
     vaultDrawerElement.setAttribute('aria-hidden', 'true');
     vaultDrawerElement.inert = true;

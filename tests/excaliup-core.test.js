@@ -191,10 +191,15 @@ test('normalizes vault relative paths', () => {
 
 test('serializes and parses Excalidraw scenes compliant with standard .excalidraw JSON', () => {
   const scene = {
-    elements: [{ id: 'rect1', type: 'rectangle', x: 10, y: 20 }],
+    elements: [
+      { id: 'rect1', type: 'rectangle', x: 10, y: 20 },
+      { id: 'img1', type: 'image', x: 0, y: 0, fileId: 'file-1' }
+    ],
     appState: { viewBackgroundColor: '#1e1e1e', name: 'Architecture' },
     files: {
-      'file-1': { id: 'file-1', dataURL: 'data:image/svg+xml;base64,test', mimeType: 'image/svg+xml' }
+      'file-1': { id: 'file-1', dataURL: 'data:image/svg+xml;base64,test', mimeType: 'image/svg+xml' },
+      // Left in Excalidraw's cache by a drawing opened earlier in the tab.
+      'other-drawing': { id: 'other-drawing', dataURL: 'data:image/png;base64,old', mimeType: 'image/png' }
     }
   };
 
@@ -202,9 +207,10 @@ test('serializes and parses Excalidraw scenes compliant with standard .excalidra
   const parsedJson = JSON.parse(serialized);
   assert.equal(parsedJson.type, 'excalidraw');
   assert.equal(parsedJson.version, 2);
-  assert.equal(parsedJson.elements.length, 1);
+  assert.equal(parsedJson.elements.length, 2);
   assert.equal(parsedJson.appState.viewBackgroundColor, '#1e1e1e');
   assert.equal(parsedJson.files['file-1'].id, 'file-1');
+  assert.deepEqual(Object.keys(parsedJson.files), ['file-1']);
 
   const parsedScene = core.parseExcalidrawScene(serialized);
   assert.deepEqual(parsedScene.elements, scene.elements);
@@ -473,7 +479,212 @@ test('normalizes per-device vault state and drops malformed baselines', () => {
   assert.deepEqual(state.baselines, { 'work/plan.excalidraw': { fingerprint: '10:20', sceneHash: '1:2::' } });
 
   const empty = core.normalizeVaultDeviceState(null);
-  assert.deepEqual(empty, { lastOpenedFile: null, legacyImported: false, baselines: {} });
+  assert.deepEqual(empty, {
+    lastOpenedFile: null,
+    legacyImported: false,
+    baselines: {},
+    sort: 'modified-desc',
+    dateFilter: 'any'
+  });
+
+  const prefs = core.normalizeVaultDeviceState({ sort: 'name-asc', dateFilter: '7d' });
+  assert.equal(prefs.sort, 'name-asc');
+  assert.equal(prefs.dateFilter, '7d');
+  const bad = core.normalizeVaultDeviceState({ sort: 'random', dateFilter: 'yesterday' });
+  assert.equal(bad.sort, 'modified-desc');
+  assert.equal(bad.dateFilter, 'any');
+});
+
+test('sorts vault drawings by date, name and size without mutating the input', () => {
+  const files = [
+    { path: 'b/Beta.excalidraw', lastModified: 300, size: 10 },
+    { path: 'Alpha 10.excalidraw', lastModified: 100, size: 30 },
+    { path: 'Alpha 2.excalidraw', lastModified: 200, size: 20 }
+  ];
+  const names = (list) => list.map((file) => file.path);
+
+  assert.deepEqual(names(core.sortVaultFiles(files)), ['b/Beta.excalidraw', 'Alpha 2.excalidraw', 'Alpha 10.excalidraw']);
+  assert.deepEqual(names(core.sortVaultFiles(files, 'modified-asc')), ['Alpha 10.excalidraw', 'Alpha 2.excalidraw', 'b/Beta.excalidraw']);
+  // Natural order: "Alpha 2" before "Alpha 10"; folders do not count.
+  assert.deepEqual(names(core.sortVaultFiles(files, 'name-asc')), ['Alpha 2.excalidraw', 'Alpha 10.excalidraw', 'b/Beta.excalidraw']);
+  assert.deepEqual(names(core.sortVaultFiles(files, 'name-desc')), ['b/Beta.excalidraw', 'Alpha 10.excalidraw', 'Alpha 2.excalidraw']);
+  assert.deepEqual(names(core.sortVaultFiles(files, 'size-desc')), ['Alpha 10.excalidraw', 'Alpha 2.excalidraw', 'b/Beta.excalidraw']);
+  assert.deepEqual(names(core.sortVaultFiles(files, 'unknown')), names(core.sortVaultFiles(files)));
+  assert.equal(files[0].path, 'b/Beta.excalidraw');
+
+  // Shelved drawings sort by their original name.
+  const shelved = [
+    { path: '.excaliup/trash/Zed.excalidraw', originalPath: 'Zed.excalidraw' },
+    { path: '.excaliup/trash/work/Ann.excalidraw', originalPath: 'work/Ann.excalidraw' }
+  ];
+  assert.deepEqual(core.sortVaultFiles(shelved, 'name-asc').map((file) => file.originalPath), ['work/Ann.excalidraw', 'Zed.excalidraw']);
+});
+
+test('filters vault drawings by last edit date', () => {
+  const now = new Date(2026, 10, 24, 15, 0).getTime();
+  const day = 24 * 60 * 60 * 1000;
+  const files = [
+    { path: 'today.excalidraw', lastModified: new Date(2026, 10, 24, 1, 0).getTime() },
+    { path: 'yesterday.excalidraw', lastModified: now - day },
+    { path: 'last-week.excalidraw', lastModified: now - 10 * day },
+    { path: 'ancient.excalidraw', lastModified: now - 90 * day }
+  ];
+  const names = (filter) => core.filterVaultFilesByDate(files, filter, now).map((file) => file.path);
+
+  assert.deepEqual(names('any'), files.map((file) => file.path));
+  assert.deepEqual(names('today'), ['today.excalidraw']);
+  assert.deepEqual(names('7d'), ['today.excalidraw', 'yesterday.excalidraw']);
+  assert.deepEqual(names('30d'), ['today.excalidraw', 'yesterday.excalidraw', 'last-week.excalidraw']);
+  assert.deepEqual(names('older'), ['ancient.excalidraw']);
+  assert.deepEqual(names('bogus'), files.map((file) => file.path));
+});
+
+test('moves drawings to the trash and archive and restores them without overwriting', async () => {
+  const vault = createMemoryVault({
+    'work/Plan.excalidraw': 'plan v1',
+    'Notes.excalidraw': 'notes'
+  });
+  const root = await vault.seed();
+
+  const trashed = await core.shelveDrawing(root, 'work/Plan.excalidraw', 'trash');
+  assert.equal(trashed, '.excaliup/trash/work/Plan.excalidraw');
+  assert.equal(await core.drawingFileExists(root, 'work/Plan.excalidraw'), false);
+  // The hidden shelf never shows up in the vault listing.
+  assert.deepEqual((await core.scanAllVaultDrawings(root, '')).map((file) => file.path), ['Notes.excalidraw']);
+  assert.deepEqual((await core.scanAllVaultFolders(root, '')).map((folder) => folder.path), ['work']);
+
+  // A second drawing trashed from the same path gets its own name.
+  await core.writeDrawingFile(root, 'work/Plan.excalidraw', 'plan v2');
+  assert.equal(await core.shelveDrawing(root, 'work/Plan.excalidraw', 'trash'), '.excaliup/trash/work/Plan (2).excalidraw');
+
+  const trash = await core.listShelvedDrawings(root, 'trash');
+  assert.deepEqual(trash.map((file) => file.originalPath).sort(), ['work/Plan (2).excalidraw', 'work/Plan.excalidraw']);
+  assert.ok(trash.every((file) => file.shelf === 'trash' && file.conflictOf === null));
+  assert.deepEqual(await core.listShelvedDrawings(root, 'archive'), []);
+
+  // Restoring next to a drawing that took the old name keeps both.
+  await core.writeDrawingFile(root, 'work/Plan.excalidraw', 'newer plan');
+  const restored = await core.restoreShelvedDrawing(root, '.excaliup/trash/work/Plan.excalidraw', 'trash');
+  assert.equal(restored, 'work/Plan (2).excalidraw');
+  assert.equal(await core.readDrawingFile(root, restored), 'plan v1');
+  assert.equal(await core.readDrawingFile(root, 'work/Plan.excalidraw'), 'newer plan');
+
+  const archived = await core.shelveDrawing(root, 'Notes.excalidraw', 'archive');
+  assert.equal(archived, '.excaliup/archive/Notes.excalidraw');
+  assert.equal(await core.restoreShelvedDrawing(root, archived, 'archive'), 'Notes.excalidraw');
+  assert.equal(await core.readDrawingFile(root, 'Notes.excalidraw'), 'notes');
+
+  await assert.rejects(core.shelveDrawing(root, '.excaliup/trash/work/Plan (2).excalidraw', 'trash'));
+  await assert.rejects(core.restoreShelvedDrawing(root, 'Notes.excalidraw', 'trash'));
+  await assert.rejects(core.shelveDrawing(root, 'Notes.excalidraw', 'bin'));
+
+  await core.emptyVaultShelf(root, 'trash');
+  assert.deepEqual(await core.listShelvedDrawings(root, 'trash'), []);
+  await core.emptyVaultShelf(root, 'trash');
+});
+
+test('keeps the version on disk in the trash before it is replaced', async () => {
+  const vault = createMemoryVault({ 'work/CX.excalidraw': 'their version' });
+  const root = await vault.seed();
+  const when = new Date(2026, 10, 24, 16, 32);
+
+  const backup = await core.backupDrawingToTrash(root, 'work/CX.excalidraw', when);
+  assert.equal(backup, '.excaliup/trash/work/CX (replaced 2026-11-24 16-32).excalidraw');
+  assert.equal(await core.readDrawingFile(root, backup), 'their version');
+  // The drawing itself is untouched; only a copy was taken.
+  assert.equal(await core.readDrawingFile(root, 'work/CX.excalidraw'), 'their version');
+  assert.equal(
+    await core.backupDrawingToTrash(root, 'work/CX.excalidraw', when),
+    '.excaliup/trash/work/CX (replaced 2026-11-24 16-32) (2).excalidraw'
+  );
+  assert.equal(await core.backupDrawingToTrash(root, 'work/missing.excalidraw', when), null);
+});
+
+test('trashing a folder moves its drawings and keeps other files', async () => {
+  const vault = createMemoryVault({
+    'client/A.excalidraw': 'a',
+    'client/deep/B.excalidraw': 'b',
+    'empty/sub/C.excalidraw': 'c'
+  });
+  const root = await vault.seed();
+  await core.writeDrawingFile(root, 'client/brief.pdf', 'pdf');
+
+  const kept = await core.trashVaultFolder(root, 'client');
+  assert.equal(kept.folderRemoved, false);
+  assert.deepEqual(kept.moved.map((entry) => entry.to).sort(), [
+    '.excaliup/trash/client/A.excalidraw',
+    '.excaliup/trash/client/deep/B.excalidraw'
+  ]);
+  assert.equal(await core.readDrawingFile(root, 'client/brief.pdf'), 'pdf');
+
+  const removed = await core.trashVaultFolder(root, 'empty');
+  assert.equal(removed.folderRemoved, true);
+  assert.deepEqual((await core.scanAllVaultFolders(root, '')).map((folder) => folder.path).sort(), ['client', 'client/deep']);
+  await assert.rejects(core.trashVaultFolder(root, ''));
+  await assert.rejects(core.trashVaultFolder(root, '.excaliup'));
+});
+
+test('vault scans survive unreadable folders and explain what they saw', async () => {
+  const vault = createMemoryVault({
+    'Plan.excalidraw': 'a',
+    'UPPER.EXCALIDRAW': 'b',
+    'notes/Idea.excalidraw.md': 'obsidian',
+    'notes/readme.txt': 'text',
+    'busy/Synced.excalidraw': 'c',
+    'broken/Lost.excalidraw': 'd'
+  });
+  const root = await vault.seed();
+
+  // A sync app renaming files ends the first listing of `busy` early.
+  const busy = await root.getDirectoryHandle('busy');
+  const busyEntries = busy.entries;
+  let busyCalls = 0;
+  busy.entries = async function* () {
+    busyCalls++;
+    if (busyCalls === 1) throw Object.assign(new Error('changed during listing'), { name: 'NotFoundError' });
+    yield* busyEntries();
+  };
+  // `broken` can never be listed.
+  const broken = await root.getDirectoryHandle('broken');
+  broken.entries = async function* () {
+    throw Object.assign(new Error('access denied'), { name: 'NotReadableError' });
+  };
+
+  const report = core.createVaultScanReport();
+  const drawings = await core.scanAllVaultDrawings(root, '', report);
+  assert.deepEqual(drawings.map((file) => file.path).sort(), ['Plan.excalidraw', 'UPPER.EXCALIDRAW', 'busy/Synced.excalidraw']);
+  assert.equal(busyCalls, 2);
+  assert.equal(report.drawings, 3);
+  assert.equal(report.obsidianDrawings, 1);
+  assert.equal(report.files, 5);
+  assert.equal(report.folders, 3);
+  assert.deepEqual(report.errors, [{ path: 'broken', name: 'NotReadableError', message: 'access denied' }]);
+
+  // Without a report the scan works the same and never throws for a subfolder.
+  assert.equal((await core.scanAllVaultDrawings(root, '')).length, 3);
+  assert.deepEqual((await core.scanAllVaultFolders(root, '')).map((folder) => folder.path).sort(), ['broken', 'busy', 'notes']);
+  const listing = await core.scanVaultDirectory(root, '');
+  assert.deepEqual(listing.files.map((file) => file.name).sort(), ['Plan.excalidraw', 'UPPER.EXCALIDRAW']);
+  assert.equal(core.isDrawingFileName('Idea.excalidraw.md'), false);
+  assert.equal(core.isDrawingFileName('Board.Excalidraw.JSON'), true);
+});
+
+test('tells looping animated SVGs from one-shot ones', () => {
+  // line-md loading-twotone-loop: a one-shot draw-in plus an endless spin.
+  const loading = '<svg><path><animate fill="freeze" attributeName="stroke-dashoffset" dur="0.3s" values="16;0"/>' +
+    '<animateTransform attributeName="transform" dur="1.5s" repeatCount="indefinite" type="rotate" values="0 12 12;360 12 12"/></path></svg>';
+  assert.equal(core.svgAnimationLoopsNatively(loading), true);
+  // line-md check: steps chained once, then they hold the last frame.
+  const check = '<svg><path><animate id="a" fill="freeze" attributeName="stroke-dashoffset" dur="0.6s" values="64;0"/></path>' +
+    '<path><animate fill="freeze" attributeName="stroke-dashoffset" begin="a.end" dur="0.2s" values="14;0"/></path></svg>';
+  assert.equal(core.svgAnimationLoopsNatively(check), false);
+  // svg-spinners style: a chain that restarts itself without repeatCount.
+  const chain = '<svg><circle><animate id="x" begin="0;y.end+0.25s" attributeName="cy" dur="0.6s" values="12;6;12"/></circle>' +
+    '<circle><animate id="y" begin="x.end" attributeName="cy" dur="0.6s" values="12;6;12"/></circle></svg>';
+  assert.equal(core.svgAnimationLoopsNatively(chain), true);
+  assert.equal(core.svgAnimationLoopsNatively('<svg><style>path{animation:spin 1s linear infinite}</style></svg>'), true);
+  assert.equal(core.svgAnimationLoopsNatively('<svg><style>path{animation:draw 1s ease forwards}</style></svg>'), false);
+  assert.equal(core.svgAnimationLoopsNatively(null), false);
 });
 
 test('fingerprints drawings so changes from other devices are detected', async () => {

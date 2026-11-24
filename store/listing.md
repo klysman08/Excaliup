@@ -48,14 +48,17 @@ HOW TO USE
 3. Select an arrow to add an effect, or press B to open the icon library.
 ```
 
-## What's new in 5.6.0
+## What's new in 5.8.0
 
 ```text
-• Local Vault works with folders synced between computers: the newest version on disk is always the one you see.
-• No more duplicate drawings when the same vault is used on two devices.
-• An open drawing updates by itself when it changes on another device.
-• When a drawing changed in two places, you choose which version to keep, or keep both.
-• Conflict copies made by sync apps are marked and can be resolved from the vault.
+• Trash: deleted drawings and folders can be restored from the vault.
+• Archive: put finished drawings away and bring them back any time.
+• Safer conflicts: before a drawing is replaced, the previous version is kept in the Trash.
+• Sort the vault by date, name or size, and filter by when a drawing was last edited.
+• The vault closes when you click outside it or open a drawing.
+• The vault explains an empty list instead of showing nothing, and skips folders it cannot read.
+• Animated icons play with their own timing, so sequenced icons finish their animation.
+• Saved drawings are smaller: only the images a drawing uses are stored.
 ```
 
 ## Privacy practices

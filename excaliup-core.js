@@ -372,6 +372,20 @@
     );
   }
 
+  // True when the SVG keeps moving on its own: an indefinite SMIL repeat, a
+  // SMIL chain that restarts itself (`begin="0;other.end"`), or an infinite
+  // CSS animation. Anything else plays once and then holds its last frame.
+  function svgAnimationLoopsNatively(markup) {
+    if (typeof markup !== 'string') return false;
+    if (/\brepeat(?:Count|Dur)\s*=\s*["']\s*indefinite\s*["']/i.test(markup)) return true;
+    const beginPattern = /\bbegin\s*=\s*["']([^"']*)["']/gi;
+    let match;
+    while ((match = beginPattern.exec(markup))) {
+      if (match[1].includes(';') && /\.(?:end|begin)\b/.test(match[1])) return true;
+    }
+    return /animation(?:-iteration-count)?\s*:[^;}"']*\binfinite\b/i.test(markup);
+  }
+
   function sizeSvgForCanvas(markup, maxSize = 96) {
     if (typeof markup !== 'string') return markup;
     const targetSize = Math.max(16, Math.round(finiteNumber(maxSize, 96)));
@@ -589,8 +603,51 @@
         : null,
       // Set once `lastOpenedFile` was taken over from `.excaliup.json`.
       legacyImported: data.legacyImported === true,
-      baselines
+      baselines,
+      // How this device lists drawings; a preference, not shared with others.
+      sort: VAULT_SORTS.has(data.sort) ? data.sort : 'modified-desc',
+      dateFilter: VAULT_DATE_FILTERS.has(data.dateFilter) ? data.dateFilter : 'any'
     };
+  }
+
+  const VAULT_SORTS = new Set(['modified-desc', 'modified-asc', 'name-asc', 'name-desc', 'size-desc']);
+  const VAULT_DATE_FILTERS = new Set(['any', 'today', '7d', '30d', 'older']);
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  function getVaultFileName(file) {
+    const path = String((file && (file.originalPath || file.path || file.name)) || '');
+    return path.split('/').pop().replace(/\.excalidraw(?:\.json)?$/i, '');
+  }
+
+  // Returns a new array; `files` is left untouched.
+  function sortVaultFiles(files, sort = 'modified-desc') {
+    const byName = (a, b) => getVaultFileName(a).localeCompare(getVaultFileName(b), undefined, {
+      sensitivity: 'base',
+      numeric: true
+    });
+    const compare = {
+      'modified-desc': (a, b) => (b.lastModified || 0) - (a.lastModified || 0) || byName(a, b),
+      'modified-asc': (a, b) => (a.lastModified || 0) - (b.lastModified || 0) || byName(a, b),
+      'name-asc': byName,
+      'name-desc': (a, b) => byName(b, a),
+      'size-desc': (a, b) => (b.size || 0) - (a.size || 0) || byName(a, b)
+    }[VAULT_SORTS.has(sort) ? sort : 'modified-desc'];
+    return [...(Array.isArray(files) ? files : [])].sort(compare);
+  }
+
+  // `today` starts at local midnight; the others count whole days back from `now`.
+  function filterVaultFilesByDate(files, filter = 'any', now = Date.now()) {
+    const list = Array.isArray(files) ? files : [];
+    if (!VAULT_DATE_FILTERS.has(filter) || filter === 'any') return [...list];
+    const midnight = new Date(now);
+    midnight.setHours(0, 0, 0, 0);
+    const since = {
+      today: midnight.getTime(),
+      '7d': now - 7 * DAY_MS,
+      '30d': now - 30 * DAY_MS
+    }[filter];
+    if (filter === 'older') return list.filter((file) => (file.lastModified || 0) < now - 30 * DAY_MS);
+    return list.filter((file) => (file.lastModified || 0) >= since);
   }
 
   async function getVaultDeviceState() {
@@ -669,14 +726,48 @@
     return current;
   }
 
-  async function scanVaultDirectory(rootHandle, currentRelativePath = '') {
+  function isDrawingFileName(name) {
+    return typeof name === 'string' && /\.excalidraw(?:\.json)?$/i.test(name);
+  }
+
+  // What a vault scan saw, so an empty listing can say why it is empty.
+  function createVaultScanReport() {
+    return { folders: 0, files: 0, drawings: 0, obsidianDrawings: 0, errors: [] };
+  }
+
+  function recordScanError(report, path, error) {
+    if (!report) return;
+    report.errors.push({
+      path: path || '/',
+      name: (error && error.name) || 'Error',
+      message: (error && error.message) || String(error)
+    });
+  }
+
+  // Lists a directory, keeping what was read when listing fails halfway. Sync
+  // apps rename temporary files while syncing, which can end the browser's
+  // directory iterator early, so a failed listing is tried once more.
+  async function readDirectoryEntries(directoryHandle, path, report) {
+    const entries = new Map();
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        for await (const [name, handle] of directoryHandle.entries()) entries.set(name, handle);
+        return [...entries];
+      } catch (error) {
+        if (attempt === 2) recordScanError(report, path, error);
+      }
+    }
+    return [...entries];
+  }
+
+  async function scanVaultDirectory(rootHandle, currentRelativePath = '', report = null) {
     if (!rootHandle) return { currentPath: '', folders: [], files: [] };
     const cleanCurrent = normalizeVaultPath(currentRelativePath);
     const targetDir = await resolveDirectoryHandle(rootHandle, cleanCurrent, false);
     const folders = [];
     const files = [];
 
-    for await (const [name, handle] of targetDir.entries()) {
+    for (const [name, handle] of await readDirectoryEntries(targetDir, cleanCurrent, report)) {
       if (name.startsWith('.')) continue;
       const itemRelPath = cleanCurrent ? `${cleanCurrent}/${name}` : name;
       if (handle.kind === 'directory') {
@@ -685,7 +776,7 @@
           path: itemRelPath,
           handle
         });
-      } else if (handle.kind === 'file' && (name.endsWith('.excalidraw') || name.endsWith('.excalidraw.json'))) {
+      } else if (handle.kind === 'file' && isDrawingFileName(name)) {
         let size = 0;
         let lastModified = Date.now();
         try {
@@ -715,26 +806,46 @@
     };
   }
 
-  async function scanAllVaultDrawings(rootHandle, currentPath = '') {
+  // Every drawing below `currentPath`. A folder that cannot be read is noted
+  // in `report` and skipped, so one bad folder never hides the whole vault.
+  async function scanAllVaultDrawings(rootHandle, currentPath = '', report = null) {
     if (!rootHandle) return [];
     const cleanCurrent = normalizeVaultPath(currentPath);
     const targetDir = await resolveDirectoryHandle(rootHandle, cleanCurrent, false);
+    return scanDrawingsIn(targetDir, cleanCurrent, report);
+  }
+
+  async function scanDrawingsIn(directoryHandle, cleanCurrent, report) {
     const results = [];
 
-    for await (const [name, handle] of targetDir.entries()) {
+    for (const [name, handle] of await readDirectoryEntries(directoryHandle, cleanCurrent, report)) {
       if (name.startsWith('.')) continue;
       const itemPath = cleanCurrent ? `${cleanCurrent}/${name}` : name;
       if (handle.kind === 'directory') {
-        const subResults = await scanAllVaultDrawings(rootHandle, itemPath);
-        results.push(...subResults);
-      } else if (handle.kind === 'file' && (name.endsWith('.excalidraw') || name.endsWith('.excalidraw.json'))) {
+        if (report) report.folders++;
+        try {
+          results.push(...await scanDrawingsIn(handle, itemPath, report));
+        } catch (error) {
+          recordScanError(report, itemPath, error);
+        }
+        continue;
+      }
+      if (handle.kind !== 'file') continue;
+      if (report) {
+        report.files++;
+        if (/\.excalidraw\.md$/i.test(name)) report.obsidianDrawings++;
+      }
+      if (isDrawingFileName(name)) {
+        if (report) report.drawings++;
         let size = 0;
         let lastModified = Date.now();
         try {
           const fileData = await handle.getFile();
           size = fileData.size;
           lastModified = fileData.lastModified;
-        } catch {}
+        } catch (error) {
+          recordScanError(report, itemPath, error);
+        }
         const conflict = parseSyncConflictName(name);
         results.push({
           name,
@@ -909,7 +1020,7 @@
     const targetDir = await resolveDirectoryHandle(rootHandle, cleanCurrent, false);
     const results = [];
 
-    for await (const [name, handle] of targetDir.entries()) {
+    for (const [name, handle] of await readDirectoryEntries(targetDir, cleanCurrent, null)) {
       if (name.startsWith('.')) continue;
       if (handle.kind === 'directory') {
         const itemPath = cleanCurrent ? `${cleanCurrent}/${name}` : name;
@@ -918,8 +1029,9 @@
           path: itemPath,
           depth
         });
-        const subResults = await scanAllVaultFolders(rootHandle, itemPath, depth + 1);
-        results.push(...subResults);
+        try {
+          results.push(...await scanAllVaultFolders(rootHandle, itemPath, depth + 1));
+        } catch {}
       }
     }
     return results;
@@ -999,6 +1111,135 @@
     return await resolveDirectoryHandle(rootHandle, cleanPath, true);
   }
 
+  // --- Trash & archive ---
+  //
+  // Both live in a hidden `.excaliup/` folder inside the vault, so a synced
+  // vault shares them with every device and the normal listing never shows
+  // them. A shelved drawing keeps its original path below the shelf folder,
+  // which is all a restore needs.
+
+  const VAULT_SHELVES = Object.freeze({
+    trash: '.excaliup/trash',
+    archive: '.excaliup/archive'
+  });
+
+  function getShelfRoot(shelf) {
+    const root = VAULT_SHELVES[shelf];
+    if (!root) throw new Error(`Unknown vault shelf: ${shelf}`);
+    return root;
+  }
+
+  function isShelfPath(relativePath) {
+    const cleanPath = normalizeVaultPath(relativePath);
+    return cleanPath === '.excaliup' || cleanPath.startsWith('.excaliup/');
+  }
+
+  // `.excaliup/trash/work/Plan.excalidraw` -> `work/Plan.excalidraw`.
+  function getShelvedOriginalPath(shelf, shelfPath) {
+    const root = getShelfRoot(shelf);
+    const cleanPath = normalizeVaultPath(shelfPath);
+    return cleanPath.startsWith(`${root}/`) ? cleanPath.slice(root.length + 1) : '';
+  }
+
+  async function copyDrawingFile(rootHandle, sourcePath, targetPath) {
+    const content = await readDrawingFile(rootHandle, sourcePath);
+    await writeDrawingFile(rootHandle, targetPath, content);
+    return content;
+  }
+
+  // Moves a drawing to the trash or archive and returns where it now lives.
+  // Never overwrites: a second drawing with the same path gets a numbered name.
+  async function shelveDrawing(rootHandle, relativePath, shelf) {
+    const cleanPath = normalizeVaultPath(relativePath);
+    if (!cleanPath || isShelfPath(cleanPath)) throw new Error('Only vault drawings can be shelved');
+    const shelfPath = await getUniqueDrawingPath(rootHandle, `${getShelfRoot(shelf)}/${cleanPath}`);
+    await copyDrawingFile(rootHandle, cleanPath, shelfPath);
+    await deleteDrawingFile(rootHandle, cleanPath);
+    return shelfPath;
+  }
+
+  // Puts a shelved drawing back where it came from, next to (never over) a
+  // drawing that took its place meanwhile. Returns the restored path.
+  async function restoreShelvedDrawing(rootHandle, shelfPath, shelf) {
+    const originalPath = getShelvedOriginalPath(shelf, shelfPath);
+    if (!originalPath) throw new Error('That drawing is not on this shelf');
+    const targetPath = await getUniqueDrawingPath(rootHandle, originalPath);
+    await copyDrawingFile(rootHandle, shelfPath, targetPath);
+    await deleteDrawingFile(rootHandle, shelfPath);
+    return targetPath;
+  }
+
+  async function listShelvedDrawings(rootHandle, shelf) {
+    const root = getShelfRoot(shelf);
+    let files;
+    try {
+      files = await scanAllVaultDrawings(rootHandle, root);
+    } catch {
+      return [];
+    }
+    return files.map((file) => ({
+      ...file,
+      shelf,
+      originalPath: getShelvedOriginalPath(shelf, file.path),
+      // A trashed sync conflict copy is a plain drawing from now on.
+      conflictOf: null
+    }));
+  }
+
+  async function emptyVaultShelf(rootHandle, shelf) {
+    const root = getShelfRoot(shelf);
+    try {
+      await deleteVaultFolder(rootHandle, root, true);
+    } catch (err) {
+      // Nothing was ever trashed.
+      if (err && err.name !== 'NotFoundError' && !/not found/i.test(String(err.message))) throw err;
+    }
+  }
+
+  function formatBackupStamp(date) {
+    const pad = (value) => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}-${pad(date.getMinutes())}`;
+  }
+
+  // Keeps a copy of the version on disk in the trash right before something
+  // replaces it, so choosing the wrong version in a conflict is never final.
+  async function backupDrawingToTrash(rootHandle, relativePath, now = new Date()) {
+    const cleanPath = normalizeVaultPath(relativePath);
+    if (!(await drawingFileExists(rootHandle, cleanPath))) return null;
+    const { folder, stem, extension } = splitDrawingPath(cleanPath);
+    const name = `${stem} (replaced ${formatBackupStamp(now)})${extension}`;
+    const backupPath = await getUniqueDrawingPath(
+      rootHandle,
+      `${getShelfRoot('trash')}/${folder ? `${folder}/` : ''}${name}`
+    );
+    await copyDrawingFile(rootHandle, cleanPath, backupPath);
+    return backupPath;
+  }
+
+  async function folderHasEntries(directoryHandle) {
+    for await (const [, handle] of directoryHandle.entries()) {
+      if (handle.kind === 'file') return true;
+      if (await folderHasEntries(handle)) return true;
+    }
+    return false;
+  }
+
+  // Moves every drawing in a folder to the trash, then removes the folder
+  // when nothing but empty subfolders is left. Other files are never deleted.
+  async function trashVaultFolder(rootHandle, relativeFolderPath) {
+    const cleanPath = normalizeVaultPath(relativeFolderPath);
+    if (!cleanPath || isShelfPath(cleanPath)) throw new Error('Cannot trash that folder');
+    const drawings = await scanAllVaultDrawings(rootHandle, cleanPath);
+    const moved = [];
+    for (const drawing of drawings) {
+      moved.push({ from: drawing.path, to: await shelveDrawing(rootHandle, drawing.path, 'trash') });
+    }
+    const folderHandle = await resolveDirectoryHandle(rootHandle, cleanPath, false);
+    const folderRemoved = !(await folderHasEntries(folderHandle));
+    if (folderRemoved) await deleteVaultFolder(rootHandle, cleanPath, true);
+    return { moved, folderRemoved };
+  }
+
   function serializeExcalidrawScene({ elements = [], appState = {}, files = {} }) {
     const cleanElements = Array.isArray(elements) ? elements : [];
     const cleanAppState = {
@@ -1007,10 +1248,15 @@
       name: (appState && appState.name) || 'Untitled'
     };
 
+    // Excalidraw's file cache also holds images of every drawing opened
+    // earlier in this tab; only the ones this scene uses belong in its file.
+    const usedFileIds = new Set(cleanElements
+      .filter((element) => element && !element.isDeleted && element.fileId)
+      .map((element) => element.fileId));
     const cleanFiles = {};
     if (files && typeof files === 'object') {
       for (const [id, f] of Object.entries(files)) {
-        if (f && f.dataURL) {
+        if (f && f.dataURL && usedFileIds.has(f.id || id)) {
           cleanFiles[id] = {
             id: f.id || id,
             dataURL: f.dataURL,
@@ -1065,6 +1311,7 @@
     intersectsBounds,
     buildGifRefreshElements,
     isAnimatedSvgMarkup,
+    svgAnimationLoopsNatively,
     sizeSvgForCanvas,
     getSvgIntrinsicSize,
     AdaptiveFrameBudget,
@@ -1078,6 +1325,8 @@
     sanitizeFileName,
     normalizeVaultPath,
     resolveDirectoryHandle,
+    isDrawingFileName,
+    createVaultScanReport,
     scanVaultDirectory,
     scanAllVaultDrawings,
     scanAllVaultFolders,
@@ -1100,6 +1349,17 @@
     moveDrawingFile,
     createVaultSubfolder,
     deleteVaultFolder,
+    sortVaultFiles,
+    filterVaultFilesByDate,
+    VAULT_SHELVES,
+    isShelfPath,
+    getShelvedOriginalPath,
+    shelveDrawing,
+    restoreShelvedDrawing,
+    listShelvedDrawings,
+    emptyVaultShelf,
+    backupDrawingToTrash,
+    trashVaultFolder,
     serializeExcalidrawScene,
     parseExcalidrawScene
   });
